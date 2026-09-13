@@ -1,0 +1,22 @@
+# Виртуальное окружение
+.venv/
+.venv312/
+venv/
+env/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Файлы PyCharm
+.idea/
+*.iml
+
+# Локальные настройки и секреты
+.env
+*.log
+
+# Кэш pip
+pip-log.txt
+pip-delete-this-directory.txt
