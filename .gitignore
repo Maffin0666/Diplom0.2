@@ -1,22 +1,30 @@
 # Виртуальное окружение
 .venv/
-.venv312/
 venv/
-env/
 
 # Кэш Python
 __pycache__/
 *.py[cod]
-*$py.class
 
-# Файлы PyCharm
+# Настройки PyCharm
 .idea/
-*.iml
 
-# Локальные настройки и секреты
-.env
+# Логи
 *.log
 
-# Кэш pip
-pip-log.txt
-pip-delete-this-directory.txt
+# Модели (самые тяжелые файлы)
+server/models/*.pth
+server/models/*.onnx
+server/models/*.h5
+
+# Результаты работы (аудио)
+server/output/*
+!server/output/.gitkeep
+
+# Временные файлы
+server/temp/*
+!server/temp/.gitkeep
+
+# Прочие системные файлы
+.DS_Store
+Thumbs.db
