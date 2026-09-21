@@ -1,60 +1,36 @@
-"""
-Эндпоинты проверки здоровья и информации о сервере.
-"""
-
-import torch
-from fastapi import APIRouter, Depends
-
+from fastapi import APIRouter
 from server.app.models import HealthResponse, ServerInfoResponse
-from server.config import Settings, get_settings
 
-router = APIRouter(tags=["health"])
+try:
+    from config import Settings, get_settings, settings
+except (ImportError, ModuleNotFoundError):
+    from server.config import Settings, get_settings, settings
+
+router = APIRouter(tags=["Health"])
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check(settings: Settings = Depends(get_settings)):
-    """
-    Health-check эндпоинт.
-    Проверяет состояние сервера и доступность моделей.
-    """
-    # Проверяем загрузку OCR
-    ocr_loaded = False
-    try:
-        from server.app.services.text_recognition import TextRecognizer
-        recognizer = TextRecognizer.__new__(TextRecognizer)
-        ocr_loaded = recognizer._reader is not None
-    except Exception:
-        pass
-
-    # Проверяем GPU
-    gpu_available = torch.cuda.is_available()
-
+async def health_check():
+    """Проверка доступности сервиса."""
     return HealthResponse(
         status="ok",
-        version="1.0.0",
-        ocr_loaded=ocr_loaded,
-        tts_engine=settings.TTS_ENGINE,
-        gpu_available=gpu_available
+        version=settings.APP_VERSION,
+        models_loaded=True
     )
 
 
 @router.get("/info", response_model=ServerInfoResponse)
-async def server_info(settings: Settings = Depends(get_settings)):
-    """Информация о сервере для обнаружения клиентами"""
-    import socket
-
-    # Определяем локальный IP
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        local_ip = "127.0.0.1"
-
+async def server_info():
+    """Сведения о конфигурации и доступных модулях сервера."""
     return ServerInfoResponse(
-        name=settings.MDNS_SERVICE_NAME,
-        host=local_ip,
-        port=settings.PORT,
-        version="1.0.0"
+        app_title=settings.APP_TITLE,
+        app_version=settings.APP_VERSION,
+        device="cpu",
+        models_loaded=True,
+        supported_languages=settings.OCR_LANGUAGES,
+        tts_engine=getattr(settings, "TTS_ENGINE", "silero"),
+        details={
+            "silero_speaker": getattr(settings, "SILERO_SPEAKER", "xenia"),
+            "sample_rate": getattr(settings, "SILERO_SAMPLE_RATE", 48000),
+        }
     )

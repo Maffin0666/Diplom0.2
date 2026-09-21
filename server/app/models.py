@@ -1,73 +1,62 @@
-"""
-Pydantic-модели для валидации запросов и ответов API.
-"""
-
-from pydantic import BaseModel, Field
+import uuid
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
+from datetime import datetime
+from pydantic import BaseModel, Field
 
 
-class TaskStatus(str, Enum):
-    """Статусы задачи обработки"""
+class RecognitionStatus(str, Enum):
     PENDING = "pending"
-    PREPROCESSING = "preprocessing"
-    RECOGNIZING = "recognizing"
-    SYNTHESIZING = "synthesizing"
+    PROCESSING = "processing"
     COMPLETED = "completed"
-    ERROR = "error"
+    FAILED = "failed"
 
 
-class TimestampedSegment(BaseModel):
-    """
-    Сегмент текста с временными метками для синхронизации с аудио.
-
-    Attributes:
-        start: время начала в секундах
-        end: время окончания в секундах
-        text: распознанный текст сегмента
-        is_formula: является ли сегмент формулой
-        original: исходный текст (LaTeX для формул)
-    """
-    start: float = Field(..., ge=0, description="Время начала (сек)")
-    end: float = Field(..., ge=0, description="Время окончания (сек)")
-    text: str = Field(..., description="Текст для отображения")
-    is_formula: bool = Field(default=False, description="Это формула?")
-    original: Optional[str] = Field(default=None, description="Исходный текст/LaTeX")
+class ContentType(str, Enum):
+    TEXT = "text"
+    FORMULA = "formula"
 
 
-class RecognitionResult(BaseModel):
-    """
-    Результат распознавания — полный ответ клиенту.
-    """
-    task_id: str = Field(..., description="Уникальный ID задачи")
-    status: TaskStatus = Field(..., description="Статус обработки")
-    recognized_text: str = Field(default="", description="Полный распознанный текст")
-    segments: list[TimestampedSegment] = Field(default_factory=list, description="Сегменты с метками")
-    audio_url: Optional[str] = Field(default=None, description="URL аудиофайла")
-    audio_duration: float = Field(default=0.0, ge=0, description="Длительность аудио (сек)")
-    error_message: Optional[str] = Field(default=None, description="Сообщение об ошибке")
+class TextChunk(BaseModel):
+    """Единичный смысловой сегмент лекции с миллисекундными метками времени."""
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
+    index: int = 0
+    content_type: ContentType = ContentType.TEXT
+    text: str
+    spoken_text: str
+    is_formula: bool = False
+    confidence: float = 1.0
+    bbox: Optional[List[int]] = None  # [x_min, y_min, x_max, y_max]
+    start_time: float = 0.0           # В секундах (с точностью до мс)
+    end_time: float = 0.0             # В секундах (с точностью до мс)
+    duration: float = 0.0
 
 
-class TaskStatusResponse(BaseModel):
-    """Ответ на запрос статуса задачи"""
+class RecognitionResponse(BaseModel):
+    """Синхронизированный манифест распознанной лекции."""
     task_id: str
-    status: TaskStatus
-    progress: float = Field(default=0.0, ge=0, le=100, description="Прогресс в %")
-    message: str = Field(default="", description="Описание текущего этапа")
+    status: RecognitionStatus
+    full_text: str
+    spoken_text: str
+    audio_url: Optional[str] = None
+    total_duration: float = 0.0
+    chunks: List[TextChunk] = []
+    processing_time: float = 0.0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    error: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
-    """Ответ health-check эндпоинта"""
-    status: str = "ok"
-    version: str = "1.0.0"
-    ocr_loaded: bool = False
-    tts_engine: str = ""
-    gpu_available: bool = False
+    status: str
+    version: str
+    models_loaded: bool
 
 
 class ServerInfoResponse(BaseModel):
-    """Информация о сервере для mDNS-обнаружения"""
-    name: str
-    host: str
-    port: int
-    version: str = "1.0.0"
+    app_title: str
+    app_version: str
+    device: str
+    models_loaded: bool
+    supported_languages: List[str]
+    tts_engine: str
+    details: dict

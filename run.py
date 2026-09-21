@@ -5,6 +5,19 @@
 настраивает CORS, middleware и события жизненного цикла.
 """
 
+import sys
+from pathlib import Path
+
+# Добавляем директорию server в системные пути до любых импортов проекта
+BASE_DIR = Path(__file__).resolve().parent
+SERVER_DIR = BASE_DIR / "server"
+
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+
 import time
 import asyncio
 from contextlib import asynccontextmanager
@@ -17,9 +30,21 @@ from fastapi.staticfiles import StaticFiles
 from server.app.routes import health, recognition
 from server.app.services.text_recognition import TextRecognizer
 from server.app import logger
-from server.config import get_settings
+from config import get_settings
 
 import uvicorn
+
+
+import sys
+from pathlib import Path
+
+# Добавляем пути к корню и папке server в системные пути поиска
+BASE_DIR = Path(__file__).resolve().parent
+SERVER_DIR = BASE_DIR / "server"
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
 
 # --- mDNS сервис ---
@@ -207,8 +232,8 @@ if __name__ == "__main__":
 
     # factory=True означает, что create_app - это функция, которая возвращает приложение
     uvicorn.run(
-        "app.main:create_app",
-        factory=True,
+        "server.app.main:app",
+        factory=False,
         host="127.0.0.1",  # На Windows надежнее использовать 127.0.0.1
         port=settings.PORT,
         reload=False,  # Автоперезагрузка при изменении кода

@@ -1,248 +1,223 @@
-"""
-Сервис распознавания текста с помощью EasyOCR.
-Модель загружается один раз при инициализации и переиспользуется.
-"""
-
-import easyocr
+import os
+import re
+import cv2
+import torch
 import numpy as np
-from pathlib import Path
-from typing import Optional
+from PIL import Image
+from typing import List, Dict, Any
+import easyocr
+from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 
-from server.app.utils.logger import logger
+try:
+    from config import settings
+except (ImportError, ModuleNotFoundError):
+    try:
+        from server.config import settings
+    except (ImportError, ModuleNotFoundError):
+        from ...config import settings
+
+from ..utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class TextRecognizer:
-    """
-    Обёртка над EasyOCR для распознавания рукописного и печатного текста.
+    def __init__(self):
+        num_cores = os.cpu_count() or 4
+        torch.set_num_threads(min(8, num_cores))
 
-    Поддерживает русский и английский языки.
-    Модель загружается при первом вызове и кэшируется.
-    """
+        self.device = "cuda" if (settings.USE_GPU and torch.cuda.is_available()) else "cpu"
+        logger.info(f"Инициализация OCR конвейера (устройство: {self.device}, потоков: {torch.get_num_threads()})...")
 
-    _instance: Optional["TextRecognizer"] = None
-    _reader: Optional[easyocr.Reader] = None
+        # 1. Детектор строк EasyOCR CRAFT
+        self.reader = easyocr.Reader(
+            settings.OCR_LANGUAGES,
+            gpu=settings.USE_GPU,
+            model_storage_directory=str(settings.MODELS_DIR)
+        )
 
-    def __new__(cls, *args, **kwargs):
-        """Singleton — одна модель на всё приложение"""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __init__(self, languages: list[str] = None, use_gpu: bool = False):
-        """
-        Args:
-            languages: список языков для распознавания
-            use_gpu: использовать GPU (CUDA)
-        """
-        if self._reader is not None:
-            return  # Уже инициализирован
-
-        self.languages = languages or ["ru", "en"]
-        self.use_gpu = use_gpu
-
-        logger.info(f"Загрузка EasyOCR модели (языки: {self.languages}, GPU: {use_gpu})...")
+        # 2. Модель TrOCR с INT8 квантованием
+        self.trocr_name = "raxtemur/trocr-base-ru"
         try:
-            self._reader = easyocr.Reader(
-                self.languages,
-                gpu=use_gpu,
-                model_storage_directory=str(Path(__file__).parent.parent.parent / "models"),
-                download_enabled=True
-            )
-            logger.info("EasyOCR модель загружена успешно")
+            self.processor = TrOCRProcessor.from_pretrained(self.trocr_name)
+            model = VisionEncoderDecoderModel.from_pretrained(self.trocr_name)
+
+            if self.device == "cpu":
+                model.decoder = torch.ao.quantization.quantize_dynamic(
+                    model.decoder, {torch.nn.Linear}, dtype=torch.qint8
+                )
+
+            self.trocr = model.to(self.device)
+            self.trocr.eval()
+            logger.info("✅ Модель TrOCR готова к работе")
         except Exception as e:
-            logger.error(f"Ошибка загрузки EasyOCR: {e}")
-            raise RuntimeError(f"Не удалось загрузить EasyOCR: {e}")
+            logger.warning(f"TrOCR недоступен ({e}), откат на EasyOCR")
+            self.processor = None
+            self.trocr = None
 
-    @property
-    def is_loaded(self) -> bool:
-        """Загружена ли модель"""
-        return self._reader is not None
+    @staticmethod
+    def is_math_line(text: str) -> bool:
+        t = text.lower().strip()
+        has_eq = any(op in t for op in ["=", "≠", "≈", "≤", "≥", "<=", ">="])
+        has_fn = bool(re.search(r"\b(lim|sqrt|sin|cos|tg|ctg|log|ln|int|sum)\b", t)) or ("\\" in t)
+        has_pow = bool(re.search(r"[a-zа-я0-9]\^[0-9a-z]", t)) or bool(re.search(r"\b\d+/\d+\b", t))
+        return has_eq or has_fn or has_pow
 
-    def recognize(self, image: np.ndarray, detail: int = 1) -> list[dict]:
-        """
-        Распознаёт текст на изображении.
+    @classmethod
+    def clean_handwriting_text(cls, text: str) -> str:
+        """Устраняет дефекты курсивных соединений TrOCR и нормализует пробелы."""
+        t = text.strip()
 
-        Args:
-            image: изображение как numpy array (BGR или RGB)
-            detail: уровень детализации (0 — только текст, 1 — с координатами)
+        # 1. Пробелы после знаков препинания: "серьезное.Так" -> "серьезное. Так"
+        t = re.sub(r"([.,:;!?])(?=[а-яА-Яa-zA-Z])", r"\1 ", t)
 
-        Returns:
-            список словарей с ключами:
-                - text: распознанный текст
-                - confidence: уверенность (0-1)
-                - bbox: координаты [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+        # 2. Исправление ложных дефисов от рукописных соединений
+        # Сохраняем только реальные русские частицы (-то, -либо, -нибудь, кое-)
+        def _fix_hyphen(m):
+            w1, w2 = m.group(1), m.group(2)
+            w2_lower = w2.lower()
+            if w2_lower in ("то", "либо", "нибудь", "ка", "де", "с"):
+                return f"{w1}-{w2}"
+            if w1.lower() in ("кое", "кой", "из", "по"):
+                return f"{w1}-{w2}"
+            return f"{w1} {w2}"
 
-        Raises:
-            RuntimeError: если модель не загружена
-        """
-        if self._reader is None:
-            raise RuntimeError("EasyOCR модель не загружена")
+        t = re.sub(r"\b([а-яА-Яa-zA-Z]+)-([а-яА-Яa-zA-Z]+)\b", _fix_hyphen, t)
 
-        logger.debug(f"Распознавание текста, размер изображения: {image.shape}")
+        # 3. Часто встречающиеся слитные предлоги из-за курсива
+        t = re.sub(r"\bвпроцессе\b", "в процессе", t, flags=re.I)
+        t = re.sub(r"\bтакчто\b", "так что", t, flags=re.I)
 
-        try:
-            # EasyOCR возвращает список кортежей: (bbox, text, confidence)
-            results = self._reader.readtext(
-                image,
-                detail=detail,
-                paragraph=False,  # не объединять в параграфы — нам нужны отдельные строки
-                min_size=10,  # минимальный размер текстового блока
-                text_threshold=0.5,  # порог уверенности для текста
-                low_text=0.3,  # порог для слабо выраженного текста
-                link_threshold=0.3,  # порог связи между символами
-                width_ths=0.7,  # порог ширины для объединения
-                decoder="greedy"
-            )
+        # 4. Двоеточия внутри слов ("его:можно" -> "его можно")
+        t = re.sub(r"([а-яА-ЯёЁ]):([а-яА-ЯёЁ])", r"\1 \2", t)
 
-            recognized = []
-            for item in results:
-                if detail == 0:
-                    # Только текст
-                    recognized.append({
-                        "text": item,
-                        "confidence": 1.0,
-                        "bbox": None
-                    })
-                else:
-                    bbox, text, confidence = item
-                    recognized.append({
-                        "text": text.strip(),
-                        "confidence": float(confidence),
-                        "bbox": bbox
-                    })
+        return re.sub(r"\s+", " ", t).strip()
 
-            # Фильтруем пустые результаты и с низкой уверенностью
-            recognized = [
-                r for r in recognized
-                if r["text"] and len(r["text"].strip()) > 0 and r["confidence"] > 0.2
-            ]
+    def recognize(self, image: np.ndarray) -> List[Dict[str, Any]]:
+        results = self.reader.readtext(
+            image,
+            paragraph=False,
+            adjust_contrast=0.6,
+            text_threshold=0.25,
+            low_text=0.15,
+            link_threshold=0.35,
+            mag_ratio=1.3
+        )
 
-            # Сортируем по позиции: сверху вниз, слева направо
-            if detail == 1 and recognized:
-                recognized = self._sort_by_position(recognized)
-
-            logger.info(f"Распознано {len(recognized)} текстовых блоков")
-            for i, r in enumerate(recognized):
-                logger.debug(f"  [{i}] ({r['confidence']:.2f}) {r['text']}")
-
-            return recognized
-
-        except Exception as e:
-            logger.error(f"Ошибка распознавания текста: {e}")
-            raise
-
-    def recognize_from_file(self, image_path: str) -> list[dict]:
-        """
-        Распознаёт текст из файла изображения.
-
-        Args:
-            image_path: путь к файлу
-
-        Returns:
-            список распознанных блоков
-        """
-        import cv2
-
-        path = Path(image_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Файл не найден: {image_path}")
-
-        image = cv2.imread(str(path))
-        if image is None:
-            raise ValueError(f"Не удалось прочитать изображение: {image_path}")
-
-        return self.recognize(image)
-
-    def _sort_by_position(self, results: list[dict]) -> list[dict]:
-        """
-        Сортировка результатов по позиции на странице.
-        Группирует строки и сортирует сверху вниз, слева направо.
-        """
-
-        def get_top_left(item):
-            bbox = item.get("bbox")
-            if bbox is None:
-                return (0, 0)
-            # bbox — список из 4 точек [[x,y], ...]
-            # Берём верхний левый угол
-            y = min(point[1] for point in bbox)
-            x = min(point[0] for point in bbox)
-            return (y, x)
-
-        return sorted(results, key=get_top_left)
-
-    def get_full_text(self, results: list[dict]) -> str:
-        """
-        Собирает полный текст из результатов распознавания.
-        Группирует по строкам на основе вертикальной позиции.
-
-        Args:
-            results: результаты recognize()
-
-        Returns:
-            полный текст с переносами строк
-        """
-        if not results:
-            return ""
-
-        # Группировка по строкам
-        lines = self._group_into_lines(results)
-
-        # Собираем текст
-        text_lines = []
-        for line in lines:
-            line_text = " ".join(item["text"] for item in line)
-            text_lines.append(line_text)
-
-        return "\n".join(text_lines)
-
-    def _group_into_lines(self, results: list[dict]) -> list[list[dict]]:
-        """
-        Группирует текстовые блоки по строкам.
-        Блоки с близкой вертикальной позицией считаются одной строкой.
-        """
         if not results:
             return []
 
-        # Определяем среднюю высоту символов
-        heights = []
-        for r in results:
-            if r["bbox"]:
-                bbox = r["bbox"]
-                h = max(p[1] for p in bbox) - min(p[1] for p in bbox)
-                heights.append(h)
+        h_img, w_img = image.shape[:2]
+        raw_items = []
 
-        avg_height = np.median(heights) if heights else 30
-        line_threshold = avg_height * 0.5  # порог для отнесения к одной строке
-
-        # Сортируем по Y-координате
-        sorted_results = sorted(results, key=lambda r: min(p[1] for p in r["bbox"]) if r["bbox"] else 0)
-
-        lines = []
-        current_line = [sorted_results[0]]
-        current_y = min(p[1] for p in sorted_results[0]["bbox"]) if sorted_results[0]["bbox"] else 0
-
-        for item in sorted_results[1:]:
-            if item["bbox"] is None:
-                current_line.append(item)
+        for bbox, text, conf in results:
+            clean = text.strip()
+            if not clean or clean in ("@", "|", "_", "~"):
                 continue
 
-            item_y = min(p[1] for p in item["bbox"])
+            top_y = max(0, int(min(bbox[0][1], bbox[1][1])))
+            bottom_y = min(h_img, int(max(bbox[2][1], bbox[3][1])))
+            left_x = max(0, int(min(bbox[0][0], bbox[3][0])))
+            right_x = min(w_img, int(max(bbox[1][0], bbox[2][0])))
 
-            if abs(item_y - current_y) < line_threshold:
-                # Та же строка
-                current_line.append(item)
+            # Отсекаем изолированные краевые цифры/метки страниц
+            if len(clean) <= 2 and top_y < 85 and (right_x > w_img * 0.75 or left_x < w_img * 0.25):
+                continue
+
+            raw_items.append({
+                "bbox": [[left_x, top_y], [right_x, top_y], [right_x, bottom_y], [left_x, bottom_y]],
+                "text": clean,
+                "confidence": float(conf),
+                "top_y": top_y,
+                "bottom_y": bottom_y,
+                "left_x": left_x,
+                "right_x": right_x,
+                "height": bottom_y - top_y
+            })
+
+        if not raw_items:
+            return []
+
+        # Группировка в горизонтальные строки
+        raw_items.sort(key=lambda it: it["top_y"])
+        avg_h = sum(it["height"] for it in raw_items) / len(raw_items)
+        line_threshold = avg_h * 0.65
+
+        lines: List[List[Dict[str, Any]]] = []
+        cur_line: List[Dict[str, Any]] = []
+
+        for item in raw_items:
+            if not cur_line:
+                cur_line.append(item)
+                continue
+            if abs(item["top_y"] - cur_line[-1]["top_y"]) <= line_threshold:
+                cur_line.append(item)
             else:
-                # Новая строка
-                # Сортируем текущую строку по X
-                current_line.sort(key=lambda r: min(p[0] for p in r["bbox"]) if r["bbox"] else 0)
-                lines.append(current_line)
-                current_line = [item]
-                current_y = item_y
+                cur_line.sort(key=lambda x: x["left_x"])
+                lines.append(cur_line)
+                cur_line = [item]
 
-        # Последняя строка
-        if current_line:
-            current_line.sort(key=lambda r: min(p[0] for p in r["bbox"]) if r["bbox"] else 0)
-            lines.append(current_line)
+        if cur_line:
+            cur_line.sort(key=lambda x: x["left_x"])
+            lines.append(cur_line)
 
-        return lines
+        structured_blocks = []
+        crops_to_trocr = []
+        trocr_indices = []
+
+        for idx, l in enumerate(lines):
+            line_text = " ".join(it["text"] for it in l)
+            avg_conf = sum(it["confidence"] for it in l) / len(l)
+
+            # Вычисляем границы строки с запасом для петель букв (padding)
+            h_line = max(it["bottom_y"] for it in l) - min(it["top_y"] for it in l)
+            pad_y = max(8, int(h_line * 0.22))
+            pad_x = 20
+
+            min_x = max(0, min(it["left_x"] for it in l) - pad_x)
+            max_x = min(w_img, max(it["right_x"] for it in l) + pad_x)
+            min_y = max(0, min(it["top_y"] for it in l) - pad_y)
+            max_y = min(h_img, max(it["bottom_y"] for it in l) + pad_y)
+
+            bbox = [[min_x, min_y], [max_x, min_y], [max_x, max_y], [min_x, max_y]]
+
+            has_math = self.is_math_line(line_text)
+            is_candidate = (self.trocr is not None) and (not has_math) and (avg_conf < 0.85) and (max_x - min_x > 30)
+
+            if is_candidate and (max_y - min_y > 10):
+                line_crop = image[min_y:max_y, min_x:max_x]
+                crops_to_trocr.append(Image.fromarray(cv2.cvtColor(line_crop, cv2.COLOR_BGR2RGB)))
+                trocr_indices.append(idx)
+
+            structured_blocks.append({
+                "text": line_text,
+                "confidence": round(avg_conf, 3),
+                "bbox": bbox
+            })
+
+        # Пакетное распознавание рукописных строк
+        if crops_to_trocr:
+            try:
+                inputs = self.processor(images=crops_to_trocr, return_tensors="pt", padding=True).to(self.device)
+                with torch.inference_mode():
+                    generated_ids = self.trocr.generate(
+                        inputs.pixel_values,
+                        max_new_tokens=64,
+                        num_beams=1
+                    )
+                decoded_texts = self.processor.batch_decode(generated_ids, skip_special_tokens=True)
+
+                for block_idx, text_pred in zip(trocr_indices, decoded_texts):
+                    pred_clean = self.clean_handwriting_text(text_pred)
+                    if len(pred_clean) >= 3 and len(re.findall(r"[а-яА-ЯёЁ]", pred_clean)) >= 2:
+                        structured_blocks[block_idx]["text"] = pred_clean
+                        structured_blocks[block_idx]["confidence"] = 0.95
+            except Exception as e:
+                logger.error(f"Ошибка инференса TrOCR: {e}")
+
+        # Финальная очистка для всех строк
+        for b in structured_blocks:
+            b["text"] = self.clean_handwriting_text(b["text"])
+
+        logger.info(f"Распознано строк: {len(structured_blocks)}")
+        return structured_blocks

@@ -1,54 +1,30 @@
-"""
-Настройка логирования для всего приложения.
-Логи пишутся в консоль и в файл server.log.
-"""
-
 import logging
 import sys
-from pathlib import Path
+from typing import Optional
 
 
-def setup_logger(name: str = "lecture_ocr", level: int = logging.DEBUG) -> logging.Logger:
-    """
-    Создаёт и настраивает логгер.
+def setup_logger(name: Optional[str] = None) -> logging.Logger:
+    """Настройка и получение экземпляра логгера."""
+    logger_name = name if name else "app"
+    log = logging.getLogger(logger_name)
 
-    Args:
-        name: имя логгера
-        level: уровень логирования
+    if not log.handlers:
+        log.setLevel(logging.INFO)
+        formatter = logging.Formatter(
+            fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
 
-    Returns:
-        настроенный логгер
-    """
-    logger = logging.getLogger(name)
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(formatter)
+        log.addHandler(handler)
 
-    # Не добавляем обработчики повторно
-    if logger.handlers:
-        return logger
-
-    logger.setLevel(level)
-
-    # Формат: [2024-01-15 14:30:00] [INFO] [module] Сообщение
-    formatter = logging.Formatter(
-        fmt="[%(asctime)s] [%(levelname)s] [%(module)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-
-    # --- Консольный обработчик ---
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(level)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-
-    # --- Файловый обработчик ---
-    log_dir = Path(__file__).parent.parent.parent  # server/
-    log_file = log_dir / "server.log"
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    return logger
+    return log
 
 
-# Глобальный логгер приложения
-logger = setup_logger()
+# Алиас для вызова функции
+get_logger = setup_logger
+
+# Глобальный экземпляр логгера по умолчанию для прямого импорта
+logger = setup_logger("app")
+logger = setup_logger("app")
