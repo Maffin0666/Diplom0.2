@@ -68,13 +68,17 @@ class SemanticChunker:
                     "bbox": box
                 })
             else:
-                pending_texts.append(text)
-                pending_boxes.append(box)
-                pending_confs.append(b.get("confidence", 0.9))
-
-                # Если строка заканчивается точкой, восклицательным или вопросительным знаком
-                if re.search(r"[.!?]\s*$", text):
-                    flush_sentence()
+                # Предложение может закончиться в середине строки OCR.
+                # Небольшие фрагменты удобнее озвучивать и перематывать.
+                pieces = re.split(r"(?<=[.!?])\s+(?=[А-Яа-яЁё])", text)
+                for piece in pieces:
+                    if pending_texts and sum(map(len, pending_texts)) + len(piece) > 240:
+                        flush_sentence()
+                    pending_texts.append(piece)
+                    pending_boxes.append(box)
+                    pending_confs.append(b.get("confidence", 0.9))
+                    if re.search(r"[.!?]\s*$", piece):
+                        flush_sentence()
 
         # Сбрасываем оставшийся хвост текста
         flush_sentence()

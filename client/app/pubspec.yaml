@@ -1,0 +1,26 @@
+name: lecture_reader
+description: Доступное мобильное приложение для озвучивания конспектов.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.6.0
+  http_parser: ^4.1.2
+  image_picker: ^1.2.3
+  just_audio: ^0.10.6
+  path_provider: ^2.1.6
+  speech_to_text: ^7.4.0
+  uuid: ^4.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

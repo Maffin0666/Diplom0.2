@@ -1,6 +1,7 @@
 # Виртуальное окружение
 .venv/
 venv/
+.env
 
 # Кэш Python
 __pycache__/
@@ -11,15 +12,23 @@ __pycache__/
 
 # Логи
 *.log
+server/logs/
+server/data/
 
 # Модели (самые тяжелые файлы)
 server/models/*.pth
 server/models/*.onnx
 server/models/*.h5
+server/models/*.pt
+server/models/*.safetensors
+server/models/*.bin
+server/models/trocr_candidates/
 
 # Результаты работы (аудио)
 server/output/*
 !server/output/.gitkeep
+server/static/audio/*
+static/audio/*
 
 # Временные файлы
 server/temp/*
@@ -28,3 +37,18 @@ server/temp/*
 # Прочие системные файлы
 .DS_Store
 Thumbs.db
+
+theory/
+
+# Локальные фотографии и результаты бенчмарков; содержат пользовательские конспекты.
+img_for_test/
+reports/
+tests/fixtures/handwriting_ground_truth.json
+
+# Локальные записи о ходе разработки; сохраняются на ноутбуке.
+/CHANGELOG.md
+/*_REPORT*.md
+/SERVER_AUDIT_*.md
+/OCR_GROUND_TRUTH_IMPROVEMENTS_*.md
+/OCR_MODEL_COMPARISON_*.md
+/client/app/ios/Runner/Assets.xcassets/LaunchImage.imageset/README.md

@@ -1,0 +1,590 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Система распознавания лекций и озвучивания",
+    "description": "Асинхронный сервер распознавания рукописных лекций и синтеза речи для слабовидящих пользователей",
+    "version": "0.2.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Health Check",
+        "description": "Проверка готовности к распознаванию и озвучиванию.",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/info": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Server Info",
+        "description": "Сведения о конфигурации и доступных модулях сервера.",
+        "operationId": "server_info_info_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerInfoResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/recognition/upload": {
+      "post": {
+        "tags": [
+          "Recognition"
+        ],
+        "summary": "Upload Lecture Image",
+        "operationId": "upload_lecture_image_api_v1_recognition_upload_post",
+        "parameters": [
+          {
+            "name": "x-upload-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Upload-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_lecture_image_api_v1_recognition_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Файл или изображение слишком велико"
+          },
+          "415": {
+            "description": "Тип изображения не поддерживается"
+          },
+          "429": {
+            "description": "Очередь заполнена; заголовок Retry-After задаёт паузу"
+          },
+          "409": {
+            "description": "Идентификатор повторного запроса занят другим снимком"
+          },
+          "503": {
+            "description": "Модели или кодировщик ещё не готовы"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/recognition/status/{task_id}": {
+      "get": {
+        "tags": [
+          "Recognition"
+        ],
+        "summary": "Get Task Status",
+        "operationId": "get_task_status_api_v1_recognition_status__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskStatusResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Задача не найдена"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/recognition/result/{task_id}": {
+      "get": {
+        "tags": [
+          "Recognition"
+        ],
+        "summary": "Get Task Result",
+        "operationId": "get_task_result_api_v1_recognition_result__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecognitionResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Задача ещё в очереди или выполняется"
+          },
+          "404": {
+            "description": "Задача не найдена"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_upload_lecture_image_api_v1_recognition_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_lecture_image_api_v1_recognition_upload_post"
+      },
+      "ContentType": {
+        "type": "string",
+        "enum": [
+          "text",
+          "formula"
+        ],
+        "title": "ContentType"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "models_loaded": {
+            "type": "boolean",
+            "title": "Models Loaded"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "models_loaded"
+        ],
+        "title": "HealthResponse"
+      },
+      "RecognitionResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RecognitionStatus"
+          },
+          "full_text": {
+            "type": "string",
+            "title": "Full Text"
+          },
+          "spoken_text": {
+            "type": "string",
+            "title": "Spoken Text"
+          },
+          "audio_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Url"
+          },
+          "total_duration": {
+            "type": "number",
+            "title": "Total Duration",
+            "default": 0.0
+          },
+          "image_width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Width"
+          },
+          "image_height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Height"
+          },
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/TextChunk"
+            },
+            "type": "array",
+            "title": "Chunks"
+          },
+          "processing_time": {
+            "type": "number",
+            "title": "Processing Time",
+            "default": 0.0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "status",
+          "full_text",
+          "spoken_text"
+        ],
+        "title": "RecognitionResponse",
+        "description": "Синхронизированный манифест распознанной лекции."
+      },
+      "RecognitionStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "processing",
+          "completed",
+          "failed"
+        ],
+        "title": "RecognitionStatus"
+      },
+      "ServerInfoResponse": {
+        "properties": {
+          "app_title": {
+            "type": "string",
+            "title": "App Title"
+          },
+          "app_version": {
+            "type": "string",
+            "title": "App Version"
+          },
+          "device": {
+            "type": "string",
+            "title": "Device"
+          },
+          "models_loaded": {
+            "type": "boolean",
+            "title": "Models Loaded"
+          },
+          "supported_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Supported Languages"
+          },
+          "tts_engine": {
+            "type": "string",
+            "title": "Tts Engine"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Details"
+          }
+        },
+        "type": "object",
+        "required": [
+          "app_title",
+          "app_version",
+          "device",
+          "models_loaded",
+          "supported_languages",
+          "tts_engine",
+          "details"
+        ],
+        "title": "ServerInfoResponse"
+      },
+      "TaskStatusResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RecognitionStatus"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "status"
+        ],
+        "title": "TaskStatusResponse"
+      },
+      "TextChunk": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "index": {
+            "type": "integer",
+            "title": "Index",
+            "default": 0
+          },
+          "content_type": {
+            "$ref": "#/components/schemas/ContentType",
+            "default": "text"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "spoken_text": {
+            "type": "string",
+            "title": "Spoken Text"
+          },
+          "is_formula": {
+            "type": "boolean",
+            "title": "Is Formula",
+            "default": false
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "default": 1.0
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox"
+          },
+          "start_time": {
+            "type": "number",
+            "title": "Start Time",
+            "default": 0.0
+          },
+          "end_time": {
+            "type": "number",
+            "title": "End Time",
+            "default": 0.0
+          },
+          "duration": {
+            "type": "number",
+            "title": "Duration",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "spoken_text"
+        ],
+        "title": "TextChunk",
+        "description": "Единичный смысловой сегмент лекции с миллисекундными метками времени."
+      },
+      "UploadResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RecognitionStatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "status"
+        ],
+        "title": "UploadResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

@@ -1,7 +1,7 @@
 import uuid
 from enum import Enum
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
 
@@ -40,9 +40,20 @@ class RecognitionResponse(BaseModel):
     spoken_text: str
     audio_url: Optional[str] = None
     total_duration: float = 0.0
-    chunks: List[TextChunk] = []
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
+    chunks: List[TextChunk] = Field(default_factory=list)
     processing_time: float = 0.0
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    error: Optional[str] = None
+
+
+class UploadResponse(BaseModel):
+    task_id: str
+    status: RecognitionStatus
+
+
+class TaskStatusResponse(UploadResponse):
     error: Optional[str] = None
 
 

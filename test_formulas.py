@@ -1,8 +1,5 @@
 """Быстрая проверка конвертации формул без запуска сервера"""
-import sys
-sys.path.insert(0, 'server')
-
-from server.app import FormulaToSpeech
+from server.app.services.formula_to_speech import FormulaToSpeech
 
 converter = FormulaToSpeech()
 

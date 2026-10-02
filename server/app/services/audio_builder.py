@@ -1,79 +1,86 @@
+"""Поблочная сборка MP3 с обязательным озвучиванием каждого фрагмента."""
+
+from pathlib import Path
 import os
 import uuid
-from typing import List, Tuple
+
 from pydub import AudioSegment
 
-try:
-    from config import settings
-except (ImportError, ModuleNotFoundError):
-    from ...config import settings
-
-from ..models import TextChunk
-from .tts_engine import TTSEngine
-from ..utils.logger import get_logger
+from server.config import settings
+from server.app.models import TextChunk
+from server.app.services.tts_engine import TTSEngine
+from server.app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class AudioBuilder:
     def __init__(self):
-        self.tts = TTSEngine()
-        self.output_dir = str(settings.AUDIO_DIR)
-        self.temp_dir = str(settings.TEMP_DIR)
-        os.makedirs(self.output_dir, exist_ok=True)
-        os.makedirs(self.temp_dir, exist_ok=True)
+        self.tts = TTSEngine(
+            engine_type=settings.TTS_ENGINE,
+            speaker=settings.SILERO_SPEAKER,
+            allow_online=settings.ALLOW_ONLINE_TTS,
+            use_fallback=settings.USE_FALLBACK_TTS,
+        )
+        self.output_dir = Path(settings.AUDIO_DIR)
+        self.temp_dir = Path(settings.TEMP_DIR)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-    def generate_full_audio(self, chunks: List[TextChunk]) -> Tuple[str, List[TextChunk]]:
+    def generate_full_audio(self, chunks: list[TextChunk]) -> tuple[str | None, list[TextChunk]]:
+        """Возвращает аудио и чанки только при успехе всех фрагментов.
+
+        Во время сборки изменяются только локальные копии чанков. Результат
+        публикуется по конечному URL после успешного кодирования всего MP3.
+        """
         combined = AudioSegment.empty()
-        current_time_ms = 0
-        updated_chunks: List[TextChunk] = []
-
-        # Естественная пауза между смысловыми предложениями и формулами
-        sentence_pause = AudioSegment.silent(duration=350)
-
+        timed_chunks: list[TextChunk] = []
         for chunk in chunks:
-            text_to_speak = chunk.spoken_text if chunk.spoken_text else chunk.text
-            if not text_to_speak or not text_to_speak.strip():
-                continue
+            text = (chunk.spoken_text or chunk.text).strip()
+            if not text:
+                raise RuntimeError(f"У фрагмента {chunk.index} нет текста для озвучивания")
 
-            temp_wav = os.path.join(self.temp_dir, f"chunk_{uuid.uuid4().hex[:8]}.wav")
-
+            temporary = self.temp_dir / f"chunk_{uuid.uuid4().hex}.wav"
+            generated = temporary
             try:
-                # Синтезируем сразу полное предложение — у Silero формируется идеальная интонация
-                audio_path = self.tts.synthesize(text=text_to_speak.strip(), output_path=temp_wav)
-                if not audio_path or not os.path.exists(audio_path):
-                    continue
+                generated = Path(self.tts.synthesize(text, str(temporary)))
+                with generated.open("rb") as source:
+                    segment = AudioSegment.from_file(source, format=generated.suffix.lstrip("."))
+                if len(segment) == 0:
+                    raise RuntimeError("TTS создал пустое аудио")
 
-                segment = AudioSegment.from_file(audio_path)
-                seg_len_ms = len(segment)
+                # Пауза нужна между фрагментами, но не после последнего.
+                if timed_chunks:
+                    combined += AudioSegment.silent(duration=350, frame_rate=segment.frame_rate)
+                start_ms = len(combined)
+                combined += segment
+                end_ms = len(combined)
+                timed_chunks.append(chunk.model_copy(update={
+                    "start_time": round(start_ms / 1000, 3),
+                    "end_time": round(end_ms / 1000, 3),
+                    "duration": round((end_ms - start_ms) / 1000, 3),
+                }))
+            except Exception as exc:
+                raise RuntimeError(f"Не удалось озвучить фрагмент {chunk.index}") from exc
+            finally:
+                # Удаляются только файлы, созданные этим вызовом в каталоге temp.
+                for path in {temporary, temporary.with_suffix(".mp3"), generated}:
+                    if path.parent.resolve() == self.temp_dir.resolve():
+                        path.unlink(missing_ok=True)
 
-                start_sec = round(current_time_ms / 1000.0, 3)
-                end_sec = round((current_time_ms + seg_len_ms) / 1000.0, 3)
+        if not timed_chunks:
+            return None, []
 
-                chunk.start_time = start_sec
-                chunk.end_time = end_sec
-                chunk.duration = round(seg_len_ms / 1000.0, 3)
-                updated_chunks.append(chunk)
+        filename = f"lecture_{uuid.uuid4().hex}.mp3"
+        final_path = self.output_dir / filename
+        partial_path = self.temp_dir / f"{filename}.partial.mp3"
+        try:
+            combined.export(str(partial_path), format="mp3", bitrate="128k")
+            if not partial_path.is_file() or partial_path.stat().st_size == 0:
+                raise RuntimeError("Кодирование MP3 не создало файл")
+            os.replace(partial_path, final_path)
+        finally:
+            partial_path.unlink(missing_ok=True)
 
-                # Склейка дорожки
-                combined += segment + sentence_pause
-                current_time_ms += seg_len_ms + 350
-
-                if os.path.exists(audio_path):
-                    os.remove(audio_path)
-
-            except Exception as e:
-                logger.error(f"Ошибка синтеза предложения: {e}")
-                continue
-
-        filename = f"lecture_{uuid.uuid4().hex[:10]}.mp3"
-        result_path = os.path.join(self.output_dir, filename)
-
-        if len(combined) > 0:
-            combined.export(result_path, format="mp3", bitrate="128k")
-            audio_url = f"/audio/{filename}"
-            logger.info(f"Аудиокнига собрана: {result_path}, длительность: {len(combined)/1000.0:.2f} с.")
-        else:
-            audio_url = None
-
-        return audio_url, updated_chunks
+        logger.info("Собрана аудиозапись %s, длительность %.3f с", filename, len(combined) / 1000)
+        return f"/audio/{filename}", timed_chunks
