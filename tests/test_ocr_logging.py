@@ -23,6 +23,34 @@ def sample_page() -> np.ndarray:
 
 
 class DetectionAndLoggingTests(unittest.TestCase):
+    def test_unreliable_math_symbol_does_not_block_line_recovery(self):
+        image = sample_page()
+
+        class Reader:
+            def __init__(self, formula_confidence):
+                self.formula_confidence = formula_confidence
+
+            def readtext(self, image, **kwargs):
+                return [
+                    ([[20, 20], [260, 20], [260, 48], [20, 48]],
+                     "=аi" if self.formula_confidence < 0.45 else "x = 2",
+                     self.formula_confidence),
+                    ([[20, 265], [260, 265], [260, 295], [20, 295]],
+                     "последняя строка", 0.1),
+                ]
+
+        recognizer = TextRecognizer.__new__(TextRecognizer)
+        recognizer.trocr = None
+        recognizer.reader = Reader(0.1)
+        with patch.object(recognizer, "_recognize_projected_lines", return_value=[]) as projected:
+            recognizer.recognize(image, source_image=image)
+            projected.assert_called_once()
+
+        recognizer.reader = Reader(0.9)
+        with patch.object(recognizer, "_recognize_projected_lines", return_value=[]) as projected:
+            recognizer.recognize(image, source_image=image)
+            projected.assert_not_called()
+
     def test_numbered_list_repairs_only_a_supported_neighboring_digit(self):
         blocks = [{"text": "7. Прослеживаемость"},
                   {"text": "В. Модифицируемость"},
@@ -121,6 +149,20 @@ class DetectionAndLoggingTests(unittest.TestCase):
             self.assertEqual(len(fallback), 2)
             self.assertEqual([item["text"] for item in fallback], ["строка одна", "строка шесть"])
 
+    def test_shadowed_lower_page_does_not_create_a_long_tail_of_rows(self):
+        page = np.full((1200, 1920, 3), 195, dtype=np.uint8)
+        for index in range(8):
+            cv2.putText(page, "handwriting line", (320, 85 + index * 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.1, (25, 25, 25), 3)
+        for y in range(760, 1200):
+            page[y, :, :] = int(170 - 100 * (y - 760) / 440)
+        for y in range(780, 1200, 35):
+            cv2.line(page, (0, y), (1919, y), (90, 90, 90), 2)
+
+        spans = ImagePreprocessor.detect_line_spans(page)
+        self.assertLessEqual(len(spans), 10)
+        self.assertLess(spans[-1][1], 900)
+
     def test_dense_notebook_rows_do_not_merge_or_include_bleedthrough(self):
         """Частые строки и светлый текст с оборота не должны смешиваться."""
         image = np.full((1000, 1920, 3), 245, dtype=np.uint8)
@@ -145,6 +187,62 @@ class DetectionAndLoggingTests(unittest.TestCase):
         # От видимой только у нижней кромки строки нельзя получать аудиоблок.
         image[986:, 350:900] = (20, 20, 20)
         self.assertEqual(len(ImagePreprocessor.detect_line_spans(image)), 12)
+
+    def test_horizontal_crop_keeps_short_leading_word(self):
+        row = np.full((110, 1920, 3), 245, dtype=np.uint8)
+        cv2.putText(row, "Kinds", (210, 75), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2, (20, 20, 20), 3)
+        cv2.putText(row, "TestingRequirements", (450, 75),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (20, 20, 20), 3)
+        # Близкая заметная пометка справа не должна расширить основную строку.
+        cv2.putText(row, "side", (930, 75), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0, (20, 20, 20), 2)
+        cv2.putText(row, "reverse", (1550, 75), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0, (180, 180, 180), 2)
+
+        bounds = ImagePreprocessor.detect_ink_bounds(row)
+        self.assertIsNotNone(bounds)
+        self.assertLess(bounds[0], 210)
+        self.assertGreater(bounds[2], 750)
+        self.assertLess(bounds[2], 900)
+
+    def test_horizontal_crop_ignores_dark_right_page_edge(self):
+        for binding in ("solid", "spiral"):
+            with self.subTest(binding=binding):
+                row = np.full((95, 1920, 3), 245, dtype=np.uint8)
+                cv2.putText(row, "real handwriting row", (230, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.6, (25, 25, 25), 3)
+                if binding == "solid":
+                    cv2.rectangle(row, (1740, 0), (1919, 94), (35, 35, 35), -1)
+                else:
+                    for y in range(0, 95, 16):
+                        cv2.rectangle(row, (1740, y), (1919, y + 8),
+                                      (25, 25, 25), -1)
+                bounds = ImagePreprocessor.detect_ink_bounds(row)
+                self.assertIsNotNone(bounds)
+                self.assertLess(bounds[0], 320)
+                self.assertGreater(bounds[2], 600)
+                self.assertLess(bounds[2], 1500)
+
+    def test_local_projection_recovers_short_rows_below_global_peak(self):
+        page = np.full((1200, 1920, 3), 245, dtype=np.uint8)
+        for index in range(8):
+            top = 80 + index * 130
+            width = 900 if index in (0, 3, 7) else 70
+            cv2.rectangle(page, (300, top), (300 + width, top + 34),
+                          (0, 0, 0), -1)
+        spans = ImagePreprocessor.detect_line_spans(page)
+        self.assertEqual(len(spans), 8)
+        self.assertTrue(all(any(top <= 97 + index * 130 < bottom
+                                for top, bottom in spans)
+                            for index in range(8)))
+
+    def test_local_projection_selects_one_extra_row_only_on_tall_dense_page(self):
+        old = [(index * 90, (index + 1) * 90) for index in range(18)]
+        extra = old + [(1620, 1710)]
+        self.assertTrue(ImagePreprocessor._prefer_local_lines(old, extra, 1858))
+        self.assertFalse(ImagePreprocessor._prefer_local_lines(old, extra, 1251))
+        self.assertFalse(ImagePreprocessor._prefer_local_lines(old[:3], old[:4], 1858))
 
     def test_file_logging_is_shared_and_not_duplicated(self):
         log = get_logger("server.app.test")

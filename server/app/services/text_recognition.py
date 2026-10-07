@@ -77,6 +77,15 @@ class TextRecognizer:
     def is_math_line(text: str) -> bool:
         return ContentClassifier.is_math_block(text)
 
+    @classmethod
+    def has_reliable_math_line(cls, lines: List[List[Dict[str, Any]]]) -> bool:
+        """Do not let a stray low-confidence OCR symbol veto line recovery."""
+        for line in lines:
+            confidence = sum(item["confidence"] for item in line) / len(line)
+            if confidence >= 0.45 and cls.is_math_line(" ".join(item["text"] for item in line)):
+                return True
+        return False
+
     @staticmethod
     def needs_trocr(text: str, confidence: float) -> bool:
         """Не заменяет уверенный печатный текст результатом рукописной модели."""
@@ -292,8 +301,7 @@ class TextRecognizer:
         if source_image is not None and raw_items:
             spans = ImagePreprocessor.detect_line_spans(source_image)
             mean_confidence = sum(item["confidence"] for item in raw_items) / len(raw_items)
-            has_clear_formula = any(self.is_math_line(" ".join(item["text"] for item in line))
-                                    for line in lines)
+            has_clear_formula = self.has_reliable_math_line(lines)
             if (mean_confidence < 0.45 and len(spans) > len(lines)
                     and not has_clear_formula):
                 logger.info("OCR: детектор объединил строки, EasyOCR=%d, проекция=%d, confidence=%.3f",

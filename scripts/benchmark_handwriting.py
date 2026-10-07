@@ -20,7 +20,7 @@ from PIL import Image
 from server.app.services.image_preprocessing import ImagePreprocessor
 from server.app.services.text_recognition import TextRecognizer
 from server.app.services.semantic_chunker import SemanticChunker
-from scripts.ocr_evaluation import score_text, peak_rss_mib
+from scripts.ocr_evaluation import score_text, score_line_spans, score_line_boxes, peak_rss_mib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +34,8 @@ def main() -> None:
                         help="Локальный JSON с эталонными расшифровками")
     parser.add_argument("--images-dir", type=Path, default=ROOT / "img_for_test",
                         help="Каталог локальных фотографий")
+    parser.add_argument("--line-regions", type=Path,
+                        help="JSON с ручными Y-интервалами или прямоугольниками строк")
     parser.add_argument("--model", help="Локально сохранённая TrOCR-модель для сравнения")
     parser.add_argument("--revision", help="Ревизия указанной модели, если нужна")
     parser.add_argument("--output", type=Path, help="Сохранить измерения и текст в JSON")
@@ -52,6 +54,11 @@ def main() -> None:
         parser.error(f"Нет файла эталонов: {args.references}. Передайте --references.")
     reference_bytes = args.references.read_bytes()
     references = json.loads(reference_bytes.decode("utf-8"))
+    regions = {}
+    if args.line_regions:
+        if not args.line_regions.is_file():
+            parser.error(f"Нет разметки строк: {args.line_regions}")
+        regions = json.loads(args.line_regions.read_text(encoding="utf-8"))
     load_started = time.perf_counter()
     quantize = None if args.precision is None else args.precision == "int8"
     cache = None if args.kv_cache == "default" else args.kv_cache == "on"
@@ -69,7 +76,7 @@ def main() -> None:
               "kv_cache": recognizer.trocr.generation_config.use_cache,
               "device": recognizer.device, "threads": torch.get_num_threads(),
               "reference_sha256": hashlib.sha256(reference_bytes).hexdigest(),
-              "load_seconds": round(load_seconds, 3), "records": []}
+              "load_seconds": round(load_seconds, 3), "records": [], "detection": []}
     provenance = Path(recognizer.trocr_name) / "download_provenance.json"
     if provenance.is_file():
         report["download_provenance"] = json.loads(provenance.read_text(encoding="utf-8"))
@@ -104,18 +111,31 @@ def main() -> None:
         data = image_path.read_bytes()
         page_started = time.perf_counter()
         processed = ImagePreprocessor.preprocess_for_ocr(data)
-        if "pipeline" in selected_variants:
-            lines = recognizer.recognize_with_source(processed, data)
-            record(name, "pipeline", reference, lines, page_started)
-        if selected_variants == ["pipeline"]:
-            continue
         source = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if source is None:
+            raise ValueError(f"Не удалось декодировать {image_path}")
         if source.shape[:2] != processed.shape[:2]:
             source = cv2.resize(source, (processed.shape[1], processed.shape[0]),
                                 interpolation=cv2.INTER_AREA)
         original = source.copy()
         source = ImagePreprocessor.deskew_page(source)
         spans = ImagePreprocessor.detect_line_spans(source)
+        detection = {"image": name, "predicted_spans": spans, "detected_lines": len(spans)}
+        if name in regions:
+            if regions[name] and len(regions[name][0]) == 4:
+                predicted_boxes = [[0, top, processed.shape[1], bottom]
+                                   for top, bottom in spans]
+                detection.update(score_line_boxes(regions[name], predicted_boxes))
+                detection["geometry"] = "xyxy"
+            else:
+                detection.update(score_line_spans(regions[name], spans))
+                detection["geometry"] = "y_band"
+        report["detection"].append(detection)
+        if "pipeline" in selected_variants:
+            lines = recognizer.recognize_with_source(processed, data)
+            record(name, "pipeline", reference, lines, page_started)
+        if selected_variants == ["pipeline"]:
+            continue
         if "unsplit" in selected_variants and spans:
             started = time.perf_counter()
             crops = []
@@ -182,6 +202,26 @@ def main() -> None:
             "seconds": round(sum(item["seconds"] for item in records), 3),
             "peak_rss_mib": max(item["peak_rss_mib"] for item in records),
         }
+    labelled = [item for item in report["detection"] if "matched" in item]
+    if labelled:
+        report["detection_summary_by_geometry"] = {}
+        for geometry in {item["geometry"] for item in labelled}:
+            group = [item for item in labelled if item["geometry"] == geometry]
+            matched = sum(item["matched"] for item in group)
+            predicted = matched + sum(item["extra"] for item in group)
+            expected = matched + sum(item["missed"] for item in group)
+            precision = matched / predicted if predicted else 0.0
+            recall = matched / expected if expected else 0.0
+            report["detection_summary_by_geometry"][geometry] = {
+                "pages": len(group), "precision": precision, "recall": recall,
+                "f1": 2 * precision * recall / (precision + recall)
+                if precision + recall else 0.0,
+                "matched": matched, "missed": expected - matched,
+                "extra": predicted - matched,
+            }
+        if len(report["detection_summary_by_geometry"]) == 1:
+            report["detection_summary"] = next(iter(
+                report["detection_summary_by_geometry"].values()))
     if args.output:
         args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 

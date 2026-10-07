@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+from scipy.ndimage import maximum_filter1d
 from scipy.signal import find_peaks
 from ..utils.logger import get_logger
 
@@ -8,6 +9,114 @@ logger = get_logger(__name__)
 
 class ImagePreprocessor:
     """Модуль нормализации и пространственной подготовки страницы без потери полутонов."""
+
+    @staticmethod
+    def _prefer_local_lines(previous: list[tuple[int, int]],
+                            local: list[tuple[int, int]], height: int) -> bool:
+        """Включает чувствительный поиск только при заметном пропуске строк.
+
+        На высокой плотной странице одна дополнительная строка тоже бывает
+        существенна. На коротких страницах такая разница часто означает шум.
+        """
+        gain = len(local) - len(previous)
+        return (len(previous) >= 3 and
+                (gain >= 3 or (height >= 1600 and len(previous) >= 15 and gain == 1)))
+
+    @staticmethod
+    def _local_line_spans(gray: np.ndarray, threshold: int) -> list[tuple[int, int]]:
+        """Ищет слабые строки по высоте пика относительно соседнего участка.
+
+        Глобальный максимум плотной страницы может быть во много раз выше
+        коротких строк; локальная нормировка сохраняет их без снижения
+        порога для всего листа.
+        """
+        height, width = gray.shape
+        central = gray[:, width // 12:width - width // 12]
+        profile = np.count_nonzero(central < min(100, threshold), axis=1).astype(float)
+        smooth = np.convolve(profile, np.ones(9) / 9, mode="same")
+        if smooth.max() < 5:
+            return []
+        local_max = maximum_filter1d(smooth, size=181, mode="nearest")
+        peaks, properties = find_peaks(
+            smooth, distance=max(16, height // 50), prominence=3,
+        )
+        centers = [int(y) for y, prominence in zip(peaks, properties["prominences"])
+                   if smooth[y] >= local_max[y] * 0.24
+                   and prominence >= local_max[y] * 0.035
+                   and height * 0.015 < y < height * 0.985]
+        if not 3 <= len(centers) <= 45:
+            return []
+        typical_gap = float(np.median(np.diff(centers)))
+        boundaries = [max(0, round(centers[0] - typical_gap * 0.6))]
+        boundaries += [(left + right) // 2 for left, right in
+                       zip(centers, centers[1:])]
+        boundaries.append(min(height, round(centers[-1] + typical_gap * 0.6)))
+        return [(max(0, top - 8), min(height, bottom + 8))
+                for top, bottom in zip(boundaries, boundaries[1:])]
+
+    @staticmethod
+    def _contrast_line_spans(gray: np.ndarray) -> list[tuple[int, int]]:
+        """Find dark ink relative to local paper brightness, ignoring shadows.
+
+        A darkened lower half can pass an absolute gray threshold on every
+        grid line and produce many phantom rows. This candidate is only used
+        when it removes a long tail of such rows below the last clear ink.
+        """
+        height, width = gray.shape
+        background = cv2.GaussianBlur(gray, (101, 101), 0)
+        contrast = background.astype(np.int16) - gray.astype(np.int16)
+        central = contrast[:, width // 12:width - width // 12]
+        profile = np.count_nonzero(central > 55, axis=1).astype(float)
+        smooth = np.convolve(profile, np.ones(9) / 9, mode="same")
+        if smooth.max() < 5:
+            return []
+        local_max = maximum_filter1d(smooth, size=181, mode="nearest")
+        peaks, properties = find_peaks(
+            smooth, distance=max(16, height // 50), prominence=3,
+        )
+        centers = [int(y) for y, prominence in zip(peaks, properties["prominences"])
+                   if smooth[y] >= local_max[y] * 0.24
+                   and prominence >= local_max[y] * 0.035
+                   and height * 0.015 < y < height * 0.985]
+        if not 3 <= len(centers) <= 45:
+            return []
+        typical_gap = float(np.median(np.diff(centers)))
+        boundaries = [max(0, round(centers[0] - typical_gap * 0.6))]
+        boundaries += [(left + right) // 2 for left, right in zip(centers, centers[1:])]
+        boundaries.append(min(height, round(centers[-1] + typical_gap * 0.6)))
+        return [(max(0, top - 8), min(height, bottom + 8))
+                for top, bottom in zip(boundaries, boundaries[1:])]
+
+    @staticmethod
+    def _dense_line_spans(gray: np.ndarray, threshold: int) -> list[tuple[int, int]]:
+        """Дополнительные строки на плотной странице, где общий профиль их склеил.
+
+        Поля тетради и просвечивающий текст с оборота искажают общую
+        гистограмму. Считаем только центральную часть и тёмные штрихи.
+        """
+        height, width = gray.shape
+        central = gray[:, width // 12:width - width // 12]
+        profile = np.count_nonzero(central < min(100, threshold), axis=1).astype(float)
+        smooth = np.convolve(profile, np.ones(9) / 9, mode="same")
+        maximum = float(smooth.max())
+        if maximum < 5:
+            return []
+        peaks, _ = find_peaks(
+            smooth, distance=max(16, height // 50),
+            prominence=max(3, maximum * 0.04),
+        )
+        centers = [int(y) for y in peaks
+                   if smooth[y] >= maximum * 0.15
+                   and height * 0.015 < y < height * 0.985]
+        if not 3 <= len(centers) <= 45:
+            return []
+        typical_gap = float(np.median(np.diff(centers)))
+        top = max(0, int(centers[0] - typical_gap * 0.6))
+        bottom = min(height, int(centers[-1] + typical_gap * 0.6))
+        boundaries = [top] + [(left + right) // 2 for left, right in
+                              zip(centers, centers[1:])] + [bottom]
+        return [(max(0, boundaries[i] - 8), min(height, boundaries[i + 1] + 8))
+                for i in range(len(centers))]
 
     @staticmethod
     def deskew_page(image: np.ndarray) -> np.ndarray:
@@ -103,7 +212,7 @@ class ImagePreprocessor:
         if len(dark_centers) >= 2 and len(dark_centers) >= len(centers) * 0.70:
             centers = dark_centers
         if not 2 <= len(centers) <= 45:
-            return []
+            centers = []
         bottom = height
         if len(centers) >= 3:
             typical_gap = float(np.median(np.diff(centers)))
@@ -113,8 +222,32 @@ class ImagePreprocessor:
                 bottom = (centers[-2] + centers[-1]) // 2
                 centers = centers[:-1]
         boundaries = [0] + [(left + right) // 2 for left, right in zip(centers, centers[1:])] + [bottom]
-        return [(max(0, boundaries[i] - 8), min(height, boundaries[i + 1] + 8))
-                for i in range(len(centers))]
+        spans = [(max(0, boundaries[i] - 8), min(height, boundaries[i + 1] + 8))
+                 for i in range(len(centers))]
+        dense_spans = ImagePreprocessor._dense_line_spans(gray, otsu_level)
+        # Небольшая разница может быть отражением текста с оборота листа.
+        # Дополнительное разделение включаем лишь при явном пропуске строк.
+        if len(dense_spans) >= len(spans) + 3:
+            logger.info("OCR: уточнены границы плотных строк, обычных=%d, уточнённых=%d",
+                        len(spans), len(dense_spans))
+            spans = dense_spans
+        local_spans = ImagePreprocessor._local_line_spans(gray, otsu_level)
+        # Переключаемся лишь при явном пропуске нескольких строк. На обычных
+        # страницах сохранён прежний кроп, который лучше читает TrOCR.
+        if ImagePreprocessor._prefer_local_lines(spans, local_spans, height):
+            logger.info("OCR: локальный поиск строк, прежних=%d, найдено=%d",
+                        len(spans), len(local_spans))
+            spans = local_spans
+        # The contrast candidate may be shorter because it ignores grid lines
+        # on a shadowed page. Accept it only for a large spurious tail; normal
+        # close-spaced lines keep their existing detector and crop boundaries.
+        contrast_spans = ImagePreprocessor._contrast_line_spans(gray)
+        if (len(contrast_spans) >= 3 and len(spans) - len(contrast_spans) >= 5
+                and spans[-1][1] - contrast_spans[-1][1] >= height * 0.15):
+            logger.info("OCR: удалены ложные строки в тени, прежних=%d, осталось=%d",
+                        len(spans), len(contrast_spans))
+            return contrast_spans
+        return spans
 
     @staticmethod
     def detect_ink_bounds(row: np.ndarray) -> tuple[int, int, int, int] | None:
@@ -131,6 +264,15 @@ class ImagePreprocessor:
                    np.count_nonzero(ink[:, edge:2 * edge]) * 1.5)
         if binding:
             ink[:, :int(width * 0.08)] = False
+        # Some notebook photos have the binding or a dark camera border on
+        # the right. A nearly solid last column cannot be handwriting.
+        right_edge = ink[:, -edge:]
+        right_inner = ink[:, -2 * edge:-edge]
+        right_artifact = (np.mean(ink[:, -8:]) >= 0.8
+                          and np.count_nonzero(right_edge) >
+                          np.count_nonzero(right_inner) * 1.5)
+        if right_artifact:
+            ink[:, -max(8, int(width * 0.06)):] = False
         counts = np.count_nonzero(ink, axis=0).astype(np.float32)
         smooth = np.convolve(counts, np.ones(21) / 21, mode="same")
         if smooth.max() < 2:
@@ -146,9 +288,34 @@ class ImagePreprocessor:
                   for start, end in zip(starts, ends) if end - start >= 25]
         if not groups:
             return None
-        start, end, _ = max(groups, key=lambda group: group[2])
-        left = max(0, start - 14)
-        right = min(width, end + 14)
+        # A disconnected, narrow region touching the right boundary is often
+        # the spiral binding. Prefer the text group farther inside the page.
+        inner_groups = [group for group in groups
+                        if not (group[0] >= width * 0.90 and group[1] >= width - 1
+                                and group[1] - group[0] <= width * 0.11)]
+        if inner_groups:
+            right_artifact = right_artifact or len(inner_groups) < len(groups)
+            groups = inner_groups
+        # У длинной строки короткое первое слово может образовать отдельную
+        # группу: выбор только самой плотной обрезал «Виды» или «Тестирование».
+        # Добавляем только группы слева с заметным количеством тёмных штрихов.
+        # Группы справа на реальных фото нередко оказываются просвечивающим
+        # текстом или началом соседней строки и ухудшают распознавание.
+        strongest = max(groups, key=lambda group: group[2])
+        left, right = strongest[:2]
+        max_gap = max(140, int(width * (0.35 if right_artifact else 0.075)))
+        for start, end, mass in sorted(groups, key=lambda group: group[2], reverse=True):
+            if end > left:
+                continue
+            gap = left - end
+            min_mass = strongest[2] * (0.05 if right_artifact and end - start >= 80 else 0.12)
+            min_width = 25 if right_artifact else max(60, width // 32)
+            if (mass >= min_mass
+                    and end - start >= min_width
+                    and gap <= max_gap):
+                left = start
+        left = max(0, left - 14)
+        right = min(width, right + 14)
         rows = np.flatnonzero(np.count_nonzero(ink[:, left:right], axis=1)
                              >= max(3, (right - left) // 250))
         if len(rows) < 3:
