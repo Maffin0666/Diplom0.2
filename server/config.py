@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     USE_FALLBACK_TTS: bool = False
     ALLOW_ONLINE_TTS: bool = False
 
+    # Loaded only when a phone sends a voice command; OCR startup stays unchanged.
+    VOICE_MODEL_DIR: Path = PROJECT_ROOT / "server" / "models" / "vosk-model-small-ru-0.22"
+
     MAX_IMAGE_BYTES: int = Field(default=15 * 1024 * 1024, ge=1)
     MAX_IMAGE_PIXELS: int = Field(default=20_000_000, ge=1)
     MAX_IMAGE_SIDE: int = Field(default=6000, ge=1)

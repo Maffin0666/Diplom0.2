@@ -35,5 +35,9 @@ void main() {
     expect(
         parseVoiceCommand('перейди к следующему фрагменту'), VoiceCommand.next);
     expect(parseVoiceCommand('поставь на паузу'), VoiceCommand.pause);
+    expect(parseVoiceCommand('включи'), VoiceCommand.play);
+    expect(parseVoiceCommand('стоп'), VoiceCommand.pause);
+    expect(parseVoiceCommand('дальше'), VoiceCommand.next);
+    expect(parseVoiceCommand('формулу ещё раз'), VoiceCommand.repeatFormula);
   });
 }

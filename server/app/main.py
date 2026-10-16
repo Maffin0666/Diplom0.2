@@ -10,7 +10,7 @@ from server.config import settings
 from server.app.models import RecognitionResponse, RecognitionStatus
 from server.app.task_store import TaskStore
 
-from .routes import health, recognition
+from .routes import health, recognition, voice
 from .utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,10 +23,12 @@ async def process_task_queue(app: FastAPI) -> None:
         task_id, content = await queue.get()
         app.state.processing_task_id = task_id
         try:
-            await asyncio.to_thread(
-                recognition.execute_pipeline, task_id, content,
-                app.state.recognizer, app.state.audio_builder, app.state.task_store,
-            )
+            # OCR and corrected-audio rendering share one CPU/TTS pipeline.
+            async with app.state.audio_lock:
+                await asyncio.to_thread(
+                    recognition.execute_pipeline, task_id, content,
+                    app.state.recognizer, app.state.audio_builder, app.state.task_store,
+                )
         except Exception:
             # execute_pipeline handles normal OCR/TTS failures. Keep the worker
             # alive if persistence itself unexpectedly fails for one task.
@@ -71,6 +73,7 @@ async def lifespan(app: FastAPI):
     app.state.startup_error = None
     app.state.task_store = None
     app.state.task_queue = None
+    app.state.audio_lock = asyncio.Lock()
     app.state.processing_task_id = None
     app.state.worker_task = None
     try:
@@ -141,3 +144,4 @@ app.mount("/audio", StaticFiles(directory=str(settings.AUDIO_DIR)), name="audio"
 # Подключение маршрутов API
 app.include_router(health.router)
 app.include_router(recognition.router)
+app.include_router(voice.router)

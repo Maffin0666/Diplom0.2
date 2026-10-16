@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
@@ -97,6 +98,53 @@ class RecognitionApi {
     return manifest;
   }
 
+  Future<Map<String, dynamic>> renderCorrection(
+      String taskId, List<ChunkCorrection> chunks) async {
+    final response = await _client
+        .post(
+          _url('/api/v1/recognition/result/$taskId/correction'),
+          headers: const {'content-type': 'application/json; charset=utf-8'},
+          body: jsonEncode(
+              {'chunks': chunks.map((chunk) => chunk.toJson()).toList()}),
+        )
+        .timeout(const Duration(minutes: 5));
+    _check(response);
+    final manifest = decodeObject(response.body);
+    if (manifest['task_id'] != taskId || manifest['status'] != 'completed') {
+      throw const FormatException(
+          'Сервер вернул неверный исправленный результат');
+    }
+    return manifest;
+  }
+
+  /// Sends a short microphone recording to the laptop's offline command model.
+  Future<String> recognizeVoiceCommand(String wavPath,
+      {bool dictation = false}) async {
+    final request = http.MultipartRequest(
+        'POST',
+        _url(dictation
+            ? '/api/v1/voice/command?mode=dictation'
+            : '/api/v1/voice/command'));
+    request.files.add(await http.MultipartFile.fromPath(
+      'file',
+      wavPath,
+      contentType: MediaType('audio', 'wav'),
+    ));
+    final streamed =
+        await _client.send(request).timeout(const Duration(seconds: 25));
+    final response = await http.Response.fromStream(streamed);
+    if (response.statusCode == 404) {
+      throw const ApiException(
+          'На ноутбуке запущена старая версия сервера без голосовых команд');
+    }
+    _check(response);
+    final words = decodeObject(response.body)['text'];
+    if (words is! String) {
+      throw const FormatException('Сервер вернул неверную команду');
+    }
+    return words.trim();
+  }
+
   Future<void> downloadAudio(String relativeUrl, File target) async {
     final path = Uri.tryParse(relativeUrl);
     if (path == null ||
@@ -149,11 +197,13 @@ class RecognitionApi {
     } catch (_) {}
     final message = switch (response.statusCode) {
       404 => 'Задача не найдена на сервере',
-      409 => 'Номер задачи уже занят другим снимком',
-      413 => 'Фотография слишком большая',
-      415 => 'Нужен снимок JPEG, PNG или WEBP',
+      409 =>
+        detail.isNotEmpty ? detail : 'Номер задачи уже занят другим снимком',
+      422 => detail.isNotEmpty ? detail : 'Проверьте исправленный текст',
+      413 => detail.isNotEmpty ? detail : 'Файл слишком большой',
+      415 => detail.isNotEmpty ? detail : 'Неверный формат файла',
       429 => 'Очередь сервера заполнена',
-      503 => 'Сервер пока не готов',
+      503 => detail.isNotEmpty ? detail : 'Сервер пока не готов',
       _ =>
         detail.isNotEmpty ? detail : 'Ошибка сервера: ${response.statusCode}',
     };

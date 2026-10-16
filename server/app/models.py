@@ -2,7 +2,7 @@ import uuid
 from enum import Enum
 from typing import List, Optional
 from datetime import datetime, timezone
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RecognitionStatus(str, Enum):
@@ -55,6 +55,23 @@ class UploadResponse(BaseModel):
 
 class TaskStatusResponse(UploadResponse):
     error: Optional[str] = None
+
+
+class CorrectedChunk(BaseModel):
+    """User-reviewed text and optional exact pronunciation of one chunk."""
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    text: str = Field(max_length=2000)
+    is_formula: bool
+    spoken_text: Optional[str] = Field(default=None, max_length=3000)
+    remove: bool = False
+
+
+class CorrectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chunks: List[CorrectedChunk] = Field(min_length=1, max_length=200)
 
 
 class HealthResponse(BaseModel):

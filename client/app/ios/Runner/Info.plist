@@ -74,5 +74,9 @@
     <string>Распознавать голосовые команды управления лекцией.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Распознавать голосовые команды управления лекцией.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+      <string>audio</string>
+    </array>
   </dict>
 </plist>

@@ -1,5 +1,6 @@
 """API загрузки фотографии и формирования синхронизированного результата."""
 
+import asyncio
 from io import BytesIO
 import hashlib
 import time
@@ -9,8 +10,8 @@ from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
 from PIL import Image, UnidentifiedImageError
 
 from server.config import settings
-from server.app.models import (ContentType, RecognitionResponse, RecognitionStatus,
-                               TaskStatusResponse, TextChunk, UploadResponse)
+from server.app.models import (ContentType, CorrectionRequest, RecognitionResponse,
+                               RecognitionStatus, TaskStatusResponse, TextChunk, UploadResponse)
 from server.app.task_store import TaskStore
 from server.app.services.formula_to_speech import FormulaToSpeech
 from server.app.services.image_preprocessing import ImagePreprocessor
@@ -268,3 +269,93 @@ async def get_task_result(task_id: str, request: Request):
         raise HTTPException(status_code=202, detail="Обработка в процессе")
     # Ошибочное задание возвращает сохранённый текст и статус failed.
     return task["response"]
+
+
+@router.post(
+    "/result/{task_id}/correction", response_model=RecognitionResponse,
+    responses={404: {"description": "Задача не найдена"},
+               409: {"description": "Результат ещё не готов"},
+               422: {"description": "Состав или текст фрагментов неверен"},
+               503: {"description": "Озвучивание недоступно"}},
+)
+async def render_corrected_lecture(task_id: str, correction: CorrectionRequest,
+                                   request: Request):
+    """Rebuild speech and timing from reviewed chunks without rerunning OCR."""
+    store = getattr(request.app.state, "task_store", None)
+    builder = getattr(request.app.state, "audio_builder", None)
+    if not getattr(request.app.state, "models_ready", False) or store is None or builder is None:
+        raise HTTPException(status_code=503, detail="Озвучивание пока недоступно")
+    lock = request.app.state.audio_lock
+    async with lock:
+        task = store.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Задача не найдена")
+        source = task["response"]
+        if task["status"] != RecognitionStatus.COMPLETED or source is None:
+            raise HTTPException(status_code=409, detail="Сначала дождитесь готового результата")
+        if len(correction.chunks) != len(source.chunks) or any(
+            edited.id != original.id
+            for edited, original in zip(correction.chunks, source.chunks)
+        ):
+            raise HTTPException(status_code=422, detail="Список фрагментов изменился; обновите лекцию")
+
+        prepared: list[TextChunk] = []
+        total_chars = 0
+        changed = False
+        for original, edited in zip(source.chunks, correction.chunks):
+            if edited.remove:
+                changed = True
+                continue
+            text = " ".join(edited.text.split())
+            spoken_override = (" ".join(edited.spoken_text.split())
+                               if edited.spoken_text is not None else None)
+            if not text or (edited.spoken_text is not None and not spoken_override):
+                raise HTTPException(status_code=422, detail="Фрагмент и произношение не могут быть пустыми")
+            total_chars += len(text) + len(spoken_override or "")
+            if total_chars > 20000:
+                raise HTTPException(status_code=422, detail="Исправленный текст слишком длинный")
+            text_changed = text != original.text or edited.is_formula != original.is_formula
+            if spoken_override is not None:
+                spoken = spoken_override
+            elif text_changed:
+                spoken = FormulaToSpeech.convert(text) if edited.is_formula else normalize_prose(text)
+            else:
+                spoken = original.spoken_text
+            if not spoken.strip():
+                raise HTTPException(status_code=422, detail="Не удалось подготовить текст для озвучивания")
+            changed |= text_changed or spoken != original.spoken_text
+            prepared.append(original.model_copy(update={
+                "text": text,
+                "spoken_text": spoken,
+                "is_formula": edited.is_formula,
+                "content_type": ContentType.FORMULA if edited.is_formula else ContentType.TEXT,
+                "confidence": 1.0 if text_changed else original.confidence,
+                "start_time": 0.0, "end_time": 0.0, "duration": 0.0,
+                "index": len(prepared),
+            }))
+        if not prepared:
+            raise HTTPException(status_code=422, detail="Оставьте хотя бы один фрагмент для озвучивания")
+        if not changed:
+            return source
+
+        started = time.perf_counter()
+        try:
+            audio_url, timed = await asyncio.to_thread(builder.generate_full_audio, prepared)
+            if not audio_url or len(timed) != len(prepared):
+                raise RuntimeError("Неполный результат синтеза речи")
+        except Exception as exc:
+            logger.exception("task=%s stage=correction_audio_failed", task_id)
+            raise HTTPException(status_code=503, detail="Не удалось пересоздать аудио; прежняя запись сохранена") from exc
+        result = source.model_copy(update={
+            "full_text": "\n".join(chunk.text for chunk in timed),
+            "spoken_text": " ".join(chunk.spoken_text for chunk in timed),
+            "audio_url": audio_url,
+            "total_duration": timed[-1].end_time,
+            "chunks": timed,
+            "processing_time": round(time.perf_counter() - started, 2),
+            "error": None,
+        })
+        store.update(task_id, RecognitionStatus.COMPLETED, result)
+        logger.info("task=%s stage=correction_complete chunks=%d seconds=%.2f",
+                    task_id, len(timed), result.processing_time)
+        return result

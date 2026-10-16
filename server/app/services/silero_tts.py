@@ -32,7 +32,7 @@ class SileroTTS:
             speakers = getattr(self.model, "speakers", None)
             if speakers is not None and self.speaker not in speakers:
                 raise ValueError(f"Голос {self.speaker!r} не поддерживается моделью Silero")
-            logger.info(f"✅ Silero TTS успешно загружен (голос: {self.speaker})")
+            logger.info("Silero TTS успешно загружен (голос: %s)", self.speaker)
         except Exception as e:
             self.model = None
             raise RuntimeError(f"Не удалось загрузить модель Silero: {model_path}") from e

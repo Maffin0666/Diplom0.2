@@ -23,6 +23,77 @@ def sample_page() -> np.ndarray:
 
 
 class DetectionAndLoggingTests(unittest.TestCase):
+    def test_columns_require_a_clear_upper_gutter(self):
+        page = np.full((1400, 1920, 3), 245, dtype=np.uint8)
+        for y in range(80, 560, 80):
+            cv2.rectangle(page, (200, y), (800, y + 27), (20, 20, 20), -1)
+            cv2.rectangle(page, (1120, y), (1700, y + 27), (20, 20, 20), -1)
+        for y in range(800, 1200, 100):
+            cv2.rectangle(page, (200, y), (1700, y + 27), (20, 20, 20), -1)
+
+        regions = ImagePreprocessor.detect_column_regions(page)
+        self.assertGreaterEqual(len(regions), 14)
+        self.assertTrue(any(right < 1100 for _, _, right, _ in regions))
+        self.assertTrue(any(left > 800 and right == 1920
+                            for left, _, right, _ in regions))
+        self.assertTrue(any(left == 0 and right == 1920
+                            for left, _, right, _ in regions))
+
+        for y in range(80, 560, 80):
+            cv2.rectangle(page, (800, y), (1120, y + 27), (20, 20, 20), -1)
+        self.assertEqual(ImagePreprocessor.detect_column_regions(page), [])
+
+    def test_clear_columns_use_rectangular_line_reader(self):
+        image = sample_page()
+
+        class Reader:
+            def readtext(self, image, **kwargs):
+                return [([[20, 20], [260, 20], [260, 48], [20, 48]],
+                         "строка текста", 0.1)]
+
+        recognizer = TextRecognizer.__new__(TextRecognizer)
+        recognizer.reader = Reader()
+        recognizer.trocr = object()
+        regions = [(0, 0, 300, 60), (300, 0, 600, 60)]
+        expected = [{"text": "прочитано", "confidence": 0.1,
+                     "bbox": [[0, 0], [300, 0], [300, 60], [0, 60]]}]
+        with (patch.object(ImagePreprocessor, "detect_line_spans", return_value=[]),
+              patch.object(ImagePreprocessor, "detect_column_regions", return_value=regions),
+              patch.object(recognizer, "_recognize_projected_regions",
+                           return_value=expected) as projected):
+            self.assertEqual(recognizer.recognize(image, source_image=image), expected)
+            self.assertEqual(projected.call_args.args[1], regions)
+            self.assertEqual(projected.call_args.kwargs["crop_width_threshold"], 700)
+
+    def test_rectangular_reader_preserves_column_order_and_coordinates(self):
+        image = np.full((80, 800, 3), 245, dtype=np.uint8)
+        regions = [(0, 0, 400, 70), (400, 0, 800, 70)]
+        recognizer = TextRecognizer.__new__(TextRecognizer)
+        with patch.object(recognizer, "_decode_crops", return_value=["слева", "справа"]):
+            blocks = recognizer._recognize_projected_regions(image, regions, [])
+        self.assertEqual([block["text"] for block in blocks], ["слева", "справа"])
+        self.assertEqual(blocks[0]["bbox"], [[0, 0], [400, 0], [400, 70], [0, 70]])
+        self.assertEqual(blocks[1]["bbox"], [[400, 0], [800, 0], [800, 70], [400, 70]])
+
+    def test_clear_columns_recover_when_craft_finds_nothing(self):
+        image = sample_page()
+
+        class EmptyReader:
+            def readtext(self, image, **kwargs):
+                return []
+
+        recognizer = TextRecognizer.__new__(TextRecognizer)
+        recognizer.reader = EmptyReader()
+        recognizer.trocr = object()
+        regions = [(0, 0, 300, 60), (300, 0, 600, 60)]
+        expected = [{"text": "строка", "confidence": 0.5}]
+        with (patch.object(ImagePreprocessor, "detect_column_regions", return_value=regions),
+              patch.object(recognizer, "_recognize_projected_regions",
+                           return_value=expected) as projected):
+            self.assertEqual(recognizer.recognize(image, source_image=image), expected)
+            self.assertIs(projected.call_args.args[0], image)
+            self.assertEqual(projected.call_args.args[1:3], (regions, []))
+
     def test_unreliable_math_symbol_does_not_block_line_recovery(self):
         image = sample_page()
 

@@ -250,6 +250,70 @@ class ImagePreprocessor:
         return spans
 
     @staticmethod
+    def detect_column_regions(image: np.ndarray) -> list[tuple[int, int, int, int]]:
+        """Find reading regions when a clear top-page gutter separates columns.
+
+        A full-width horizontal projection merges unrelated rows on such
+        pages. The gutter must be almost empty while both sides contain ink;
+        ordinary pages keep their existing detector.
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        height, width = gray.shape
+        if height < 900 or width < 1400:
+            return []
+        upper = gray[:round(height * 0.45)] < 100
+        column_density = np.convolve(np.count_nonzero(upper, axis=0).astype(float),
+                                    np.ones(61) / 61, mode="same")
+        middle = slice(round(width * 0.40), round(width * 0.62))
+        candidates = column_density[middle]
+        # A broad empty gutter has many equal minima. Choose its midpoint,
+        # so neither column receives most of the blank strip.
+        minima = np.flatnonzero(candidates <= candidates.min() + 0.5)
+        split_x = middle.start + int(np.median(minima))
+        left_density = np.median(column_density[round(width * 0.15):round(width * 0.40)])
+        right_density = np.median(column_density[round(width * 0.62):round(width * 0.85)])
+        side_density = min(left_density, right_density)
+        if side_density < 20 or column_density[split_x] > side_density * 0.10:
+            return []
+
+        gutter_dark = np.count_nonzero(gray[:, split_x - 30:split_x + 31] < 100,
+                                      axis=1)
+        gutter_profile = np.convolve(gutter_dark, np.ones(17) / 17, mode="same")
+        first_crossing = np.flatnonzero(gutter_profile > 3)
+        if not len(first_crossing):
+            return []
+        split_y = max(0, int(first_crossing[0]) - 20)
+        if not height * 0.30 < split_y < height * 0.70:
+            return []
+
+        def boxes(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int, int, int]]:
+            crop = gray[y0:y1, x0:x1]
+            spans = ImagePreprocessor._dense_line_spans(crop, 100)
+            return [(x0, y0 + top, x1, y0 + bottom) for top, bottom in spans]
+
+        left = boxes(0, 0, split_x, split_y)
+        right = boxes(split_x, 0, width, split_y)
+        bottom = boxes(0, split_y, width, height)
+        if min(len(left), len(right)) < 4 or len(bottom) < 2:
+            return []
+
+        # A second left-hand section can start below the first list while the
+        # right column is still active. Read the first left block, then the
+        # right block, then the lower left section.
+        break_at = len(left)
+        centers = [(top + bottom_y) / 2 for _, top, _, bottom_y in left]
+        gaps = np.diff(centers)
+        if len(gaps) >= 3:
+            widest = int(np.argmax(gaps))
+            if (2 <= widest <= len(left) - 3
+                    and gaps[widest] >= np.median(gaps) * 1.5):
+                break_at = widest + 1
+        regions = left[:break_at] + right + left[break_at:] + bottom
+        logger.info("OCR: обнаружены колонки, x=%d, y=%d, слева=%d, справа=%d, снизу=%d",
+                    split_x, split_y, len(left), len(right), len(bottom))
+        return regions
+
+    @staticmethod
     def detect_ink_bounds(row: np.ndarray) -> tuple[int, int, int, int] | None:
         """Обрезает пустые поля строки, сохраняя петли и росчерки букв."""
         height, width = row.shape[:2]

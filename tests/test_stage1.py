@@ -157,6 +157,102 @@ class StageOneTests(unittest.TestCase):
             client.app.state.task_store.get(task_id)["created_at"],
         )
 
+    def test_corrected_text_rebuilds_audio_and_server_manifest(self):
+        class RevisionAudioBuilder(FakeAudioBuilder):
+            def __init__(self):
+                self.calls = 0
+                self.fail = False
+
+            def generate_full_audio(self, chunks):
+                if self.fail:
+                    raise RuntimeError("TTS unavailable")
+                self.calls += 1
+                return f"/audio/lecture_revision_{self.calls}.mp3", [
+                    chunk.model_copy(update={"start_time": 0.0,
+                                             "end_time": float(self.calls + 1),
+                                             "duration": float(self.calls + 1)})
+                    for chunk in chunks
+                ]
+
+        builder = RevisionAudioBuilder()
+        client = self._client(builder=builder)
+        task_id = client.post("/api/v1/recognition/upload",
+                              files={"file": ("note.png", png(), "image/png")}).json()["task_id"]
+        original = self._result(client, task_id).json()
+        url = f"/api/v1/recognition/result/{task_id}/correction"
+        edited = {"chunks": [{"id": original["chunks"][0]["id"],
+                              "text": "Исправленная лекция 2+2.", "is_formula": False}]}
+        response = client.post(url, json=edited)
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertEqual(result["full_text"], "Исправленная лекция 2+2.")
+        self.assertIn("два", result["spoken_text"])
+        self.assertNotEqual(result["audio_url"], original["audio_url"])
+        self.assertEqual(result["total_duration"], 3.0)
+        self.assertEqual(client.get(f"/api/v1/recognition/result/{task_id}").json(), result)
+
+        # A failed second rendering must leave the last complete audio intact.
+        builder.fail = True
+        changed = {"chunks": [{"id": original["chunks"][0]["id"],
+                               "text": "Другой текст", "is_formula": False}]}
+        self.assertEqual(client.post(url, json=changed).status_code, 503)
+        self.assertEqual(client.get(f"/api/v1/recognition/result/{task_id}").json(), result)
+
+    def test_correction_rejects_wrong_chunk_and_accepts_exact_pronunciation(self):
+        client = self._client()
+        task_id = client.post("/api/v1/recognition/upload",
+                              files={"file": ("note.png", png(), "image/png")}).json()["task_id"]
+        original = self._result(client, task_id).json()
+        url = f"/api/v1/recognition/result/{task_id}/correction"
+        self.assertEqual(client.post(url, json={"chunks": [
+            {"id": "wrong", "text": "Текст", "is_formula": False}
+        ]}).status_code, 422)
+        self.assertEqual(client.post(url, json={"chunks": [
+            {"id": original["chunks"][0]["id"], "text": " ", "is_formula": False}
+        ]}).status_code, 422)
+        corrected = client.post(url, json={"chunks": [
+            {"id": original["chunks"][0]["id"], "text": "x^2", "is_formula": True,
+             "spoken_text": "икс в квадрате"}
+        ]})
+        self.assertEqual(corrected.status_code, 200)
+        self.assertEqual(corrected.json()["spoken_text"], "икс в квадрате")
+        self.assertTrue(corrected.json()["chunks"][0]["is_formula"])
+
+    def test_correction_can_exclude_false_ocr_fragment(self):
+        client = self._client()
+        task_id = "false-fragment"
+        store = client.app.state.task_store
+        store.create(task_id)
+        source = RecognitionResponse(
+            task_id=task_id, status=RecognitionStatus.COMPLETED,
+            full_text="Первый\nШум\nТретий", spoken_text="Первый Шум Третий",
+            audio_url="/audio/original.mp3", total_duration=3,
+            chunks=[
+                TextChunk(id="first", index=0, text="Первый", spoken_text="Первый"),
+                TextChunk(id="noise", index=1, text="Шум", spoken_text="Шум"),
+                TextChunk(id="third", index=2, text="Третий", spoken_text="Третий"),
+            ],
+        )
+        store.update(task_id, RecognitionStatus.COMPLETED, source)
+        url = f"/api/v1/recognition/result/{task_id}/correction"
+        items = [
+            {"id": chunk.id, "text": chunk.text, "is_formula": False,
+             "remove": chunk.id == "noise"}
+            for chunk in source.chunks
+        ]
+        response = client.post(url, json={"chunks": items})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual([part["id"] for part in data["chunks"]], ["first", "third"])
+        self.assertEqual([part["index"] for part in data["chunks"]], [0, 1])
+        self.assertEqual(data["full_text"], "Первый\nТретий")
+        self.assertEqual(client.post(url, json={"chunks": [
+            {"id": part["id"], "text": part["text"],
+             "is_formula": False, "remove": True}
+            for part in data["chunks"]
+        ]}).status_code, 422)
+        self.assertEqual(client.get(f"/api/v1/recognition/result/{task_id}").json(), data)
+
     def test_upload_id_makes_network_retries_idempotent(self):
         client = self._client()
         identifier = str(uuid.uuid4())

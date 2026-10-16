@@ -6,6 +6,8 @@ venv/
 # Кэш Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.pytest_tmp/
 
 # Настройки PyCharm
 .idea/
@@ -23,6 +25,8 @@ server/models/*.pt
 server/models/*.safetensors
 server/models/*.bin
 server/models/trocr_candidates/
+server/models/vosk-model-small-ru-0.22/
+server/models/vosk-model-small-ru-0.22.zip
 
 # Результаты работы (аудио)
 server/output/*

@@ -216,10 +216,138 @@
           }
         }
       }
+    },
+    "/api/v1/recognition/result/{task_id}/correction": {
+      "post": {
+        "tags": [
+          "Recognition"
+        ],
+        "summary": "Render Corrected Lecture",
+        "description": "Rebuild speech and timing from reviewed chunks without rerunning OCR.",
+        "operationId": "render_corrected_lecture_api_v1_recognition_result__task_id__correction_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecognitionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Задача не найдена"
+          },
+          "409": {
+            "description": "Результат ещё не готов"
+          },
+          "422": {
+            "description": "Состав или текст фрагментов неверен"
+          },
+          "503": {
+            "description": "Озвучивание недоступно"
+          }
+        }
+      }
+    },
+    "/api/v1/voice/availability": {
+      "get": {
+        "tags": [
+          "voice"
+        ],
+        "summary": "Availability",
+        "description": "Readiness without loading the model into memory.",
+        "operationId": "availability_api_v1_voice_availability_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/voice/command": {
+      "post": {
+        "tags": [
+          "voice"
+        ],
+        "summary": "Command",
+        "operationId": "command_api_v1_voice_command_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_command_api_v1_voice_command_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "Body_command_api_v1_voice_command_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_command_api_v1_voice_command_post"
+      },
       "Body_upload_lecture_image_api_v1_recognition_upload_post": {
         "properties": {
           "file": {
@@ -241,6 +369,68 @@
           "formula"
         ],
         "title": "ContentType"
+      },
+      "CorrectedChunk": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Text"
+          },
+          "is_formula": {
+            "type": "boolean",
+            "title": "Is Formula"
+          },
+          "spoken_text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 3000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spoken Text"
+          },
+          "remove": {
+            "type": "boolean",
+            "title": "Remove",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "text",
+          "is_formula"
+        ],
+        "title": "CorrectedChunk",
+        "description": "User-reviewed text and optional exact pronunciation of one chunk."
+      },
+      "CorrectionRequest": {
+        "properties": {
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/CorrectedChunk"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Chunks"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "chunks"
+        ],
+        "title": "CorrectionRequest"
       },
       "HTTPValidationError": {
         "properties": {

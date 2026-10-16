@@ -8,8 +8,13 @@ void main() {
       code: 'recognizerNotAvailable',
       message: 'Speech recognition not available on this device',
     ));
-    expect(message, contains('служба распознавания речи'));
-    expect(message, contains('кнопками'));
+    expect(message, contains('Speech Recognition & Synthesis'));
+    expect(message, contains('Список клавиатур'));
+    expect(message, contains('ноутбуке'));
+    expect(
+        speechServiceUnavailable(
+            PlatformException(code: 'recognizerNotAvailable')),
+        isTrue);
     expect(message, isNot(contains('PlatformException')));
   });
 

@@ -11,11 +11,16 @@ dependencies:
     sdk: flutter
   http: ^1.6.0
   http_parser: ^4.1.2
+  camera: ^0.11.2
+  flutter_tts: ^4.2.3
   image_picker: ^1.2.3
   just_audio: ^0.10.6
   path_provider: ^2.1.6
+  record: ^6.1.2
   speech_to_text: ^7.4.0
   uuid: ^4.6.0
+  just_audio_background: 0.0.1-beta.17
+  share_plus: 11.1.0
 
 dev_dependencies:
   flutter_test:
@@ -24,3 +29,43 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  fonts:
+    - family: OpenDyslexic
+      fonts:
+        - asset: assets/fonts/OpenDyslexic-Regular.otf
+        - asset: assets/fonts/OpenDyslexic-Bold.otf
+          weight: 700
+    - family: AtkinsonHyperlegibleNext
+      fonts:
+        - asset: assets/fonts/AtkinsonHyperlegibleNext-Regular.ttf
+        - asset: assets/fonts/AtkinsonHyperlegibleNext-Bold.ttf
+          weight: 700
+  assets:
+    - assets/sprites/lektoria_bookmark.png
+    - assets/sprites/lektoria_close.png
+    - assets/sprites/lektoria_fast_forward.png
+    - assets/sprites/lektoria_greeting_chest.png
+    - assets/sprites/lektoria_greeting_full.png
+    - assets/sprites/lektoria_hint.png
+    - assets/sprites/lektoria_idle_chest.png
+    - assets/sprites/lektoria_idle_full.png
+    - assets/sprites/lektoria_listening_chest.png
+    - assets/sprites/lektoria_listening_full.png
+    - assets/sprites/lektoria_mute.png
+    - assets/sprites/lektoria_next.png
+    - assets/sprites/lektoria_pause.png
+    - assets/sprites/lektoria_play.png
+    - assets/sprites/lektoria_previous.png
+    - assets/sprites/lektoria_question.png
+    - assets/sprites/lektoria_repeat_dotted.png
+    - assets/sprites/lektoria_repeat.png
+    - assets/sprites/lektoria_rewind.png
+    - assets/sprites/lektoria_speaking_chest.png
+    - assets/sprites/lektoria_stop.png
+    - assets/sprites/lektoria_success.png
+    - assets/sprites/lektoria_thinking_chest.png
+    - assets/sprites/lektoria_thinking_full.png
+    - assets/sprites/lektoria_volume_down.png
+    - assets/sprites/lektoria_volume_up.png
+    - assets/sprites/lektoria_warning_finger.png
+    - assets/sprites/lektoria_warning_palm.png

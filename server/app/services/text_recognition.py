@@ -162,17 +162,19 @@ class TextRecognizer:
             decoded.extend(self.processor.batch_decode(generated, skip_special_tokens=True))
         return decoded
 
-    def _recognize_projected_lines(
-        self, image: np.ndarray, spans: list[tuple[int, int]], raw_items: list[dict],
-        source_image: np.ndarray | None = None,
+    def _recognize_projected_regions(
+        self, image: np.ndarray, regions: list[tuple[int, int, int, int]],
+        raw_items: list[dict], source_image: np.ndarray | None = None,
+        crop_width_threshold: int = 1200,
     ) -> List[Dict[str, Any]]:
-        """Читает отдельные строки, когда CRAFT объединил несколько строк."""
+        """Reads detected row rectangles in one bounded TrOCR batch."""
         height, width = image.shape[:2]
         crops = []
         crop_groups: list[int] = []
-        for index, (y0, y1) in enumerate(spans):
-            row = image[y0:y1]
-            row_source = source_image[y0:y1] if source_image is not None else row
+        for index, (x0, y0, x1, y1) in enumerate(regions):
+            row = image[y0:y1, x0:x1]
+            row_source = (source_image[y0:y1, x0:x1]
+                          if source_image is not None else row)
             centered = ImagePreprocessor.detect_centered_text_span(row_source)
             if centered is not None:
                 row = row[:, centered[0]:centered[1]]
@@ -182,7 +184,8 @@ class TextRecognizer:
             # Центрированная строка уже ограничена по X. Повторный поиск
             # самого плотного слова мог бы отбросить короткое первое слово.
             bounds = (ImagePreprocessor.detect_ink_bounds(row_source)
-                      if centered is None and row_source.shape[1] >= 1200 else None)
+                      if centered is None and row_source.shape[1] >= crop_width_threshold
+                      else None)
             if bounds is not None:
                 left, top, right, bottom = bounds
                 row = row[top:bottom, left:right]
@@ -209,26 +212,38 @@ class TextRecognizer:
         decoded = self._decode_crops(crops,
                                      num_beams=max(2, self.num_beams) if dense_page else None,
                                      use_cache=True if dense_page else None)
-        line_parts: list[list[str]] = [[] for _ in spans]
+        line_parts: list[list[str]] = [[] for _ in regions]
         for index, text in zip(crop_groups, decoded):
             line_parts[index].append(text)
         blocks = []
-        for (top, bottom), parts in zip(spans, line_parts):
+        for (left, top, right, bottom), parts in zip(regions, line_parts):
             clean = self.clean_handwriting_text(" ".join(parts))
             if not clean:
                 continue
             nearby = [item["confidence"] for item in raw_items
-                      if top <= (item["top_y"] + item["bottom_y"]) / 2 < bottom]
+                      if (top <= (item["top_y"] + item["bottom_y"]) / 2 < bottom
+                          and left <= (item["left_x"] + item["right_x"]) / 2 < right)]
             blocks.append({
                 "text": clean,
                 "confidence": round(sum(nearby) / len(nearby), 3) if nearby else 0.0,
-                "bbox": [[0, top], [width, top], [width, min(bottom, height)], [0, min(bottom, height)]],
+                "bbox": [[left, top], [right, top], [right, min(bottom, height)],
+                         [left, min(bottom, height)]],
                 "ocr_method": "projection",
             })
         self.repair_numbered_list(blocks)
-        logger.info("OCR: резервное разделение строк, найдено=%d, прочитано=%d, фрагментов=%d",
-                    len(spans), len(blocks), len(crops))
+        logger.info("OCR: резервное разделение областей, найдено=%d, прочитано=%d, фрагментов=%d",
+                    len(regions), len(blocks), len(crops))
         return blocks
+
+    def _recognize_projected_lines(
+        self, image: np.ndarray, spans: list[tuple[int, int]], raw_items: list[dict],
+        source_image: np.ndarray | None = None,
+    ) -> List[Dict[str, Any]]:
+        """Читает отдельные строки, когда CRAFT объединил несколько строк."""
+        width = image.shape[1]
+        regions = [(0, top, width, bottom) for top, bottom in spans]
+        return self._recognize_projected_regions(image, regions, raw_items,
+                                                  source_image=source_image)
 
     def recognize(self, image: np.ndarray, source_image: np.ndarray | None = None) -> List[Dict[str, Any]]:
         results = self.reader.readtext(
@@ -242,6 +257,17 @@ class TextRecognizer:
         )
 
         if not results:
+            # A clear column layout can still supply useful row regions when
+            # CRAFT misses every handwritten block on the page.
+            if source_image is not None and self.trocr is not None:
+                regions = ImagePreprocessor.detect_column_regions(source_image)
+                if regions:
+                    try:
+                        return self._recognize_projected_regions(
+                            image, regions, [], source_image=source_image,
+                            crop_width_threshold=700)
+                    except Exception:
+                        logger.exception("OCR: чтение колонок без CRAFT не удалось")
             return []
 
         h_img, w_img = image.shape[:2]
@@ -302,6 +328,15 @@ class TextRecognizer:
             spans = ImagePreprocessor.detect_line_spans(source_image)
             mean_confidence = sum(item["confidence"] for item in raw_items) / len(raw_items)
             has_clear_formula = self.has_reliable_math_line(lines)
+            if mean_confidence < 0.45 and not has_clear_formula:
+                regions = ImagePreprocessor.detect_column_regions(source_image)
+                if len(regions) > len(lines):
+                    try:
+                        return self._recognize_projected_regions(
+                            image, regions, raw_items, source_image=source_image,
+                            crop_width_threshold=700)
+                    except Exception:
+                        logger.exception("OCR: чтение колонок не удалось; используем обычный поиск")
             if (mean_confidence < 0.45 and len(spans) > len(lines)
                     and not has_clear_formula):
                 logger.info("OCR: детектор объединил строки, EasyOCR=%d, проекция=%d, confidence=%.3f",
