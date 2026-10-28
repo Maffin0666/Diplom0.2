@@ -145,6 +145,22 @@ class RecognitionApi {
     return words.trim();
   }
 
+  Future<Uri> helpSpeech(String text) async {
+    final response = await _client
+        .post(_url('/api/v1/help/speech'),
+            headers: const {'content-type': 'application/json; charset=utf-8'},
+            body: jsonEncode({'text': text}))
+        .timeout(const Duration(seconds: 20));
+    _check(response);
+    final path = decodeObject(response.body)['audio_url'];
+    if (path is! String ||
+        !RegExp(r'^/audio/help_[a-f0-9]{24}\.mp3$').hasMatch(path)) {
+      throw const FormatException(
+          'Сервер вернул неверный адрес озвучки справки');
+    }
+    return _url(path);
+  }
+
   Future<void> downloadAudio(String relativeUrl, File target) async {
     final path = Uri.tryParse(relativeUrl);
     if (path == null ||

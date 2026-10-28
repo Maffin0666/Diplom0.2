@@ -5,6 +5,8 @@ import 'lektoria_sprite.dart';
 import 'app_preferences.dart';
 import 'brand.dart';
 import 'visual_system.dart';
+import 'voice_commands.dart';
+import 'voice_navigation.dart';
 
 /// The native camera remains the actual viewfinder and capture surface.
 /// This screen gives positioning guidance before opening it.
@@ -24,7 +26,20 @@ class CapturePage extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final contrast = PreferencesScope.of(context).highContrast;
     final previewInk = contrast ? colors.onSurface : Colors.white;
-    return Scaffold(
+    return VoicePage(
+      onCommand: (intent) async {
+        if (intent.command == AppCommand.camera ||
+            intent.command == AppCommand.capture) {
+          onCamera();
+          return true;
+        }
+        if (intent.command == AppCommand.gallery) {
+          onGallery();
+          return true;
+        }
+        return false;
+      },
+      child: Scaffold(
       appBar: AppBar(title: const Text('Добавить лекцию')),
       body: EditorialBackdrop(
           child: SafeArea(
@@ -129,7 +144,7 @@ class CapturePage extends StatelessWidget {
                   'Резкий снимок без движения'),
             ]),
       )))),
-    );
+    ));
   }
 
   Widget _tip(BuildContext context, IconData icon, String text) => Padding(

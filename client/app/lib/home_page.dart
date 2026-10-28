@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'brand.dart';
 import 'lektoria_sprite.dart';
 import 'models.dart';
+import 'lecture_export.dart';
 import 'voice_navigation.dart';
 import 'voice_commands.dart';
 import 'app_preferences.dart';
@@ -32,6 +33,16 @@ String _duration(double seconds) {
   return '$minutes:${remainder.toString().padLeft(2, '0')}';
 }
 
+String _pagesLabel(int count) {
+  final ending = count % 100;
+  if (ending >= 11 && ending <= 14) return '$count страниц';
+  return switch (count % 10) {
+    1 => '$count страница',
+    2 || 3 || 4 => '$count страницы',
+    _ => '$count страниц',
+  };
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
@@ -45,6 +56,8 @@ class HomePage extends StatefulWidget {
     required this.onDelete,
     this.onRename,
     this.onSavedNotes,
+    this.onBackup,
+    this.onRestore,
   });
 
   final List<LectureRecord> records;
@@ -57,6 +70,8 @@ class HomePage extends StatefulWidget {
   final Future<void> Function(LectureRecord) onDelete;
   final Future<void> Function(LectureRecord, String)? onRename;
   final VoidCallback? onSavedNotes;
+  final VoidCallback? onBackup;
+  final VoidCallback? onRestore;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -67,6 +82,21 @@ class _HomePageState extends State<HomePage> {
   final _scroll = ScrollController();
   String _query = '';
   LectureKind? _filter;
+
+  List<LectureRecord> get _lectureHeads {
+    final groups = <String, List<LectureRecord>>{};
+    for (final record in widget.records) {
+      groups.putIfAbsent(record.lectureId, () => []).add(record);
+    }
+    return [
+      for (final pages in groups.values)
+        pages.reduce((a, b) => a.pageOrder <= b.pageOrder ? a : b),
+    ];
+  }
+
+  List<LectureRecord> _pagesOf(LectureRecord record) => widget.records
+      .where((page) => page.lectureId == record.lectureId)
+      .toList();
   @override
   void initState() {
     super.initState();
@@ -100,10 +130,19 @@ class _HomePageState extends State<HomePage> {
       _showLibrary(intent.command == AppCommand.library);
       return true;
     }
+    if (intent.command == AppCommand.backupLibrary && widget.onBackup != null) {
+      widget.onBackup!();
+      return true;
+    }
+    if (intent.command == AppCommand.restoreLibrary && widget.onRestore != null) {
+      widget.onRestore!();
+      return true;
+    }
     return false;
   }
 
   Future<void> _confirmDelete(LectureRecord record) async {
+    final pageCount = _pagesOf(record).length;
     final approved = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -112,7 +151,9 @@ class _HomePageState extends State<HomePage> {
           SizedBox(width: 8),
           Expanded(child: Text('Удалить лекцию?')),
         ]),
-        content: Text('«${record.title}» будет удалена с устройства.'),
+        content: Text(pageCount == 1
+            ? '«${record.title}» будет удалена с устройства.'
+            : 'Все $pageCount страницы лекции «${record.title}» вместе со снимками и аудио будут удалены с устройства.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -167,13 +208,13 @@ class _HomePageState extends State<HomePage> {
                   showRenameLectureDialog(context, record, widget.onRename!);
                 },
               ),
-            if (record.manifest?.fullText.isNotEmpty == true)
+            if (_pagesOf(record).any((page) => page.manifest?.fullText.isNotEmpty == true))
               ListTile(
                 leading: const Icon(Icons.copy_rounded),
                 title: const Text('Скопировать распознанный текст'),
                 onTap: () async {
                   await Clipboard.setData(
-                      ClipboardData(text: record.manifest!.fullText));
+                      ClipboardData(text: fullTranscriptForExport(_pagesOf(record))));
                   if (sheetContext.mounted) {
                     Navigator.pop(sheetContext);
                   }
@@ -201,10 +242,14 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final filtered = widget.records.where((record) {
-      final matchesKind = _filter == null || lectureKind(record) == _filter;
-      final text =
-          '${record.title} ${record.manifest?.fullText ?? ''}'.toLowerCase();
+    final landscape =
+        MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height;
+    final filtered = _lectureHeads.where((record) {
+      final pages = _pagesOf(record);
+      final kinds = pages.map(lectureKind).toSet();
+      final groupKind = kinds.length == 1 ? kinds.single : LectureKind.mixed;
+      final matchesKind = _filter == null || groupKind == _filter;
+      final text = '${record.title} ${pages.map((page) => page.manifest?.fullText ?? '').join(' ')}'.toLowerCase();
       return matchesKind && text.contains(_query.toLowerCase());
     }).toList();
     return VoicePage(
@@ -247,211 +292,265 @@ class _HomePageState extends State<HomePage> {
                 const SizedBox(width: 8),
               ],
             ),
-            body: EditorialBackdrop(
-                child: SafeArea(
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 760),
-                  child: ListView(
-                    controller: _scroll,
-                    padding:
-                        EdgeInsets.fromLTRB(20, 18, 20, _library ? 100 : 24),
-                    children: _library
-                        ? [
-                            EditorialHeading(
-                              kicker: 'архив конспектов',
-                              title: 'Библиотека',
-                              subtitle: widget.records.isEmpty
-                                  ? 'Здесь будут снимки и озвученные лекции.'
-                                  : 'Все записи под рукой. Ищите по названию или тексту.',
-                            ),
-                            const SizedBox(height: 24),
-                            TextField(
-                              onChanged: (value) =>
-                                  setState(() => _query = value),
-                              decoration: const InputDecoration(
-                                prefixIcon: Icon(Icons.search_rounded),
-                                labelText: 'Поиск по лекциям',
+            body: Row(children: [
+              if (landscape)
+                SafeArea(
+                    child: NavigationRail(
+                  selectedIndex: _library ? 2 : 0,
+                  labelType: NavigationRailLabelType.none,
+                  minWidth: 64,
+                  onDestinationSelected: (index) {
+                    if (index == 1) {
+                      widget.onCapture();
+                    } else {
+                      _showLibrary(index == 2);
+                    }
+                  },
+                  destinations: const [
+                    NavigationRailDestination(
+                      icon: Icon(Icons.home_outlined),
+                      label: Text('Главная'),
+                    ),
+                    NavigationRailDestination(
+                      icon: Icon(Icons.add_circle_outline_rounded),
+                      label: Text('Добавить лекцию'),
+                    ),
+                    NavigationRailDestination(
+                      icon: Icon(Icons.library_books_outlined),
+                      label: Text('Библиотека'),
+                    ),
+                  ],
+                )),
+              Expanded(
+                  child: EditorialBackdrop(
+                      child: SafeArea(
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 760),
+                    child: ListView(
+                      controller: _scroll,
+                      padding:
+                          EdgeInsets.fromLTRB(20, 18, 20, _library ? 100 : 24),
+                      children: _library
+                          ? [
+                              EditorialHeading(
+                                kicker: 'архив конспектов',
+                                title: 'Библиотека',
+                                subtitle: widget.records.isEmpty
+                                    ? 'Здесь будут снимки и озвученные лекции.'
+                                    : 'Все записи под рукой. Ищите по названию или тексту.',
                               ),
-                            ),
-                            const SizedBox(height: 14),
-                            SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: Row(children: [
-                                _chip('Все', null),
-                                _chip('Текст', LectureKind.text),
-                                _chip('Формулы', LectureKind.formula),
-                                _chip('Смешанные', LectureKind.mixed),
+                              const SizedBox(height: 24),
+                              Wrap(spacing: 8, runSpacing: 8, children: [
+                                OutlinedButton.icon(
+                                  onPressed: widget.onBackup,
+                                  icon: const Icon(Icons.archive_outlined),
+                                  label: const Text('Сохранить копию'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: widget.onRestore,
+                                  icon: const Icon(Icons.unarchive_outlined),
+                                  label: const Text('Восстановить'),
+                                ),
                               ]),
-                            ),
-                            const SizedBox(height: 20),
-                            Text('Найдено: ${filtered.length}',
-                                style:
-                                    TextStyle(color: colors.onSurfaceVariant)),
-                            const SizedBox(height: 12),
-                            if (filtered.isEmpty)
-                              _empty('Здесь пока нет лекций по вашему запросу'),
-                            for (final record in filtered) ...[
-                              LectureTile(
-                                  record: record,
-                                  ordinal: widget.records.indexOf(record) + 1,
-                                  onTap: () => widget.onOpen(record),
-                                  onMenu: () => _showActions(record)),
                               const SizedBox(height: 12),
-                            ],
-                          ]
-                        : [
-                            _hero(context),
-                            const SizedBox(height: 22),
-                            if (!widget.serverConfigured) ...[
-                              Card(
-                                  child: ListTile(
-                                leading: const LectoriaSprite(
-                                    pose: LectoriaPose.criticalWarning,
-                                    size: 44),
-                                title: const Text('Подключите сервер'),
-                                subtitle: const Text(
-                                    'Укажите адрес ноутбука в настройках.'),
-                                trailing:
-                                    const Icon(Icons.chevron_right_rounded),
-                                onTap: widget.onSettings,
-                              )),
-                              const SizedBox(height: 18),
-                            ],
-                            const SectionKicker('ваши записи'),
-                            TextButton.icon(
-                              onPressed: widget.onSavedNotes,
-                              icon: const Icon(Icons.bookmarks_outlined),
-                              label: const Text('Все заметки и закладки'),
-                            ),
-                            const SizedBox(height: 9),
-                            Row(children: [
-                              Expanded(
-                                  child: Text('Недавние лекции',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleLarge)),
-                              TextButton(
-                                  onPressed: () => _showLibrary(true),
-                                  child: const Text('Все')),
-                            ]),
-                            const SizedBox(height: 8),
-                            if (widget.records.isEmpty)
-                              _empty(
-                                  'Здесь появятся ваши лекции. Добавьте первый снимок.'),
-                            for (final record in widget.records.take(4)) ...[
-                              LectureTile(
-                                  record: record,
-                                  ordinal: widget.records.indexOf(record) + 1,
-                                  onTap: () => widget.onOpen(record),
-                                  onMenu: () => _showActions(record)),
+                              TextField(
+                                onChanged: (value) =>
+                                    setState(() => _query = value),
+                                decoration: const InputDecoration(
+                                  prefixIcon: Icon(Icons.search_rounded),
+                                  labelText: 'Поиск по лекциям',
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: Row(children: [
+                                  _chip('Все', null),
+                                  _chip('Текст', LectureKind.text),
+                                  _chip('Формулы', LectureKind.formula),
+                                  _chip('Смешанные', LectureKind.mixed),
+                                ]),
+                              ),
+                              const SizedBox(height: 20),
+                              Text('Найдено: ${filtered.length}',
+                                  style: TextStyle(
+                                      color: colors.onSurfaceVariant)),
                               const SizedBox(height: 12),
+                              if (filtered.isEmpty)
+                                _empty(
+                                    'Здесь пока нет лекций по вашему запросу'),
+                              for (final record in filtered) ...[
+                                LectureTile(
+                                    record: record,
+                                    pageCount: _pagesOf(record).length,
+                                    pages: _pagesOf(record),
+                                    ordinal: _lectureHeads.indexOf(record) + 1,
+                                    onTap: () => widget.onOpen(record),
+                                    onMenu: () => _showActions(record)),
+                                const SizedBox(height: 12),
+                              ],
+                            ]
+                          : [
+                              _hero(context),
+                              const SizedBox(height: 22),
+                              if (!widget.serverConfigured) ...[
+                                Card(
+                                    child: ListTile(
+                                  leading: const LectoriaSprite(
+                                      pose: LectoriaPose.criticalWarning,
+                                      size: 44),
+                                  title: const Text('Подключите сервер'),
+                                  subtitle: const Text(
+                                      'Укажите адрес ноутбука в настройках.'),
+                                  trailing:
+                                      const Icon(Icons.chevron_right_rounded),
+                                  onTap: widget.onSettings,
+                                )),
+                                const SizedBox(height: 18),
+                              ],
+                              const SectionKicker('ваши записи'),
+                              TextButton.icon(
+                                onPressed: widget.onSavedNotes,
+                                icon: const Icon(Icons.bookmarks_outlined),
+                                label: const Text('Все заметки и закладки'),
+                              ),
+                              const SizedBox(height: 9),
+                              Row(children: [
+                                Expanded(
+                                    child: Text('Недавние лекции',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleLarge)),
+                                TextButton(
+                                    onPressed: () => _showLibrary(true),
+                                    child: const Text('Все')),
+                              ]),
+                              const SizedBox(height: 8),
+                              if (widget.records.isEmpty)
+                                _empty(
+                                    'Здесь появятся ваши лекции. Добавьте первый снимок.'),
+                              for (final record in _lectureHeads.take(4)) ...[
+                                LectureTile(
+                                    record: record,
+                                    pageCount: _pagesOf(record).length,
+                                    pages: _pagesOf(record),
+                                    ordinal: _lectureHeads.indexOf(record) + 1,
+                                    onTap: () => widget.onOpen(record),
+                                    onMenu: () => _showActions(record)),
+                                const SizedBox(height: 12),
+                              ],
                             ],
-                          ],
+                    ),
                   ),
                 ),
-              ),
-            )),
-            bottomNavigationBar: SafeArea(
-                top: false,
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                  decoration: BoxDecoration(
-                    color: colors.surfaceContainerLow,
-                    border:
-                        Border(top: BorderSide(color: colors.outlineVariant)),
-                  ),
-                  child: Row(children: [
-                    for (final item in [
-                      (false, 'Главная', Icons.home_outlined),
-                    ])
-                      Expanded(
-                          child: Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: Semantics(
-                          selected: _library == item.$1,
-                          button: true,
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 220),
-                            decoration: BoxDecoration(
-                              color: _library == item.$1
-                                  ? colors.primaryContainer
-                                  : Colors.transparent,
-                              borderRadius: BorderRadius.circular(17),
-                            ),
-                            child: TextButton.icon(
-                              style: TextButton.styleFrom(
-                                minimumSize: const Size(48, 56),
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 5),
-                              ),
-                              onPressed: () {
-                                if (PreferencesScope.of(context).haptics) {
-                                  AppHaptics.vibrate();
-                                }
-                                _showLibrary(item.$1);
-                              },
-                              icon: Icon(item.$3, size: 21),
-                              label: Text(item.$2,
-                                  maxLines: 1, overflow: TextOverflow.ellipsis),
-                            ),
-                          ),
-                        ),
-                      )),
-                    Semantics(
-                      button: true,
-                      label: 'Добавить лекцию',
-                      child: IconButton.filled(
-                        tooltip: 'Добавить лекцию',
-                        onPressed: () {
-                          if (PreferencesScope.of(context).haptics) {
-                            AppHaptics.vibrate();
-                          }
-                          widget.onCapture();
-                        },
-                        iconSize: 30,
-                        constraints:
-                            const BoxConstraints(minWidth: 64, minHeight: 64),
-                        icon: const Icon(Icons.add_rounded),
+              ))),
+            ]),
+            bottomNavigationBar: landscape
+                ? null
+                : SafeArea(
+                    top: false,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                      decoration: BoxDecoration(
+                        color: colors.surfaceContainerLow,
+                        border: Border(
+                            top: BorderSide(color: colors.outlineVariant)),
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Semantics(
-                        selected: _library,
-                        button: true,
-                        child: AnimatedContainer(
-                          duration: PreferencesScope.of(context).reduceMotion
-                              ? Duration.zero
-                              : const Duration(milliseconds: 220),
-                          decoration: BoxDecoration(
-                            color: _library
-                                ? colors.primaryContainer
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(17),
-                          ),
-                          child: TextButton.icon(
-                            style: TextButton.styleFrom(
-                              minimumSize: const Size(48, 56),
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 5),
+                      child: Row(children: [
+                        for (final item in [
+                          (false, 'Главная', Icons.home_outlined),
+                        ])
+                          Expanded(
+                              child: Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Semantics(
+                              selected: _library == item.$1,
+                              button: true,
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 220),
+                                decoration: BoxDecoration(
+                                  color: _library == item.$1
+                                      ? colors.primaryContainer
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(17),
+                                ),
+                                child: TextButton.icon(
+                                  style: TextButton.styleFrom(
+                                    minimumSize: const Size(48, 56),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 5),
+                                  ),
+                                  onPressed: () {
+                                    if (PreferencesScope.of(context).haptics) {
+                                      AppHaptics.vibrate();
+                                    }
+                                    _showLibrary(item.$1);
+                                  },
+                                  icon: Icon(item.$3, size: 21),
+                                  label: Text(item.$2,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis),
+                                ),
+                              ),
                             ),
+                          )),
+                        Semantics(
+                          button: true,
+                          label: 'Добавить лекцию',
+                          child: IconButton.filled(
+                            tooltip: 'Добавить лекцию',
                             onPressed: () {
                               if (PreferencesScope.of(context).haptics) {
                                 AppHaptics.vibrate();
                               }
-                              _showLibrary(true);
+                              widget.onCapture();
                             },
-                            icon: const Icon(Icons.library_books_outlined,
-                                size: 21),
-                            label: const Text('Библиотека',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            iconSize: 30,
+                            constraints: const BoxConstraints(
+                                minWidth: 64, minHeight: 64),
+                            icon: const Icon(Icons.add_rounded),
                           ),
                         ),
-                      ),
-                    ),
-                  ]),
-                )),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Semantics(
+                            selected: _library,
+                            button: true,
+                            child: AnimatedContainer(
+                              duration:
+                                  PreferencesScope.of(context).reduceMotion
+                                      ? Duration.zero
+                                      : const Duration(milliseconds: 220),
+                              decoration: BoxDecoration(
+                                color: _library
+                                    ? colors.primaryContainer
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(17),
+                              ),
+                              child: TextButton.icon(
+                                style: TextButton.styleFrom(
+                                  minimumSize: const Size(48, 56),
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 5),
+                                ),
+                                onPressed: () {
+                                  if (PreferencesScope.of(context).haptics) {
+                                    AppHaptics.vibrate();
+                                  }
+                                  _showLibrary(true);
+                                },
+                                icon: const Icon(Icons.library_books_outlined,
+                                    size: 21),
+                                label: const Text('Библиотека',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ]),
+                    )),
           ),
         ));
   }
@@ -569,15 +668,15 @@ class _HomePageState extends State<HomePage> {
             if (widget.records.isNotEmpty) ...[
               const SizedBox(height: 8),
               TextButton.icon(
-                onPressed: () => widget.onOpen(widget.records.first),
+                onPressed: () => widget.onOpen(_lectureHeads.first),
                 style: TextButton.styleFrom(
                     foregroundColor: ink,
                     minimumSize: const Size.fromHeight(48)),
                 icon: const Icon(Icons.play_circle_outline_rounded),
                 label: Text(
-                    widget.records.first.lastPositionMs > 0
-                        ? 'Продолжить с ${_duration(widget.records.first.lastPositionMs / 1000)}: ${widget.records.first.title}'
-                        : 'Открыть: ${widget.records.first.title}',
+                    _pagesOf(_lectureHeads.first).any((page) => page.lastPositionMs > 0)
+                        ? 'Продолжить: ${_lectureHeads.first.title}'
+                        : 'Открыть: ${_lectureHeads.first.title}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis),
               ),
@@ -611,35 +710,51 @@ class LectureTile extends StatelessWidget {
       required this.record,
       required this.onTap,
       required this.onMenu,
+      this.pageCount = 1,
+      this.pages = const [],
       this.ordinal});
   final LectureRecord record;
   final VoidCallback onTap;
   final VoidCallback onMenu;
   final int? ordinal;
+  final int pageCount;
+  final List<LectureRecord> pages;
 
   @override
   Widget build(BuildContext context) {
-    final kind = lectureKind(record);
-    final duration = record.manifest?.totalDuration ?? 0;
+    final grouped = pages.isEmpty ? [record] : pages;
+    final kinds = grouped.map(lectureKind).toSet();
+    final kind = kinds.length == 1 ? kinds.single : LectureKind.mixed;
+    final duration = grouped.fold<double>(0,
+        (sum, page) => sum + (page.manifest?.totalDuration ?? 0));
     final scheme = Theme.of(context).colorScheme;
     final kindLabel = switch (kind) {
       LectureKind.text => 'ТЕКСТ',
       LectureKind.formula => 'ФОРМУЛЫ',
       LectureKind.mixed => 'ТЕКСТ + ФОРМУЛЫ',
     };
-    final status = switch (record.status) {
+    final groupStatus = grouped.any((page) => page.status == 'failed')
+        ? 'failed'
+        : grouped.any((page) => page.status == 'processing')
+            ? 'processing'
+            : grouped.any((page) => page.status != 'completed')
+                ? 'pending' : 'completed';
+    final status = switch (groupStatus) {
       'completed' => 'Готово',
       'failed' => 'Ошибка',
       'processing' => 'Обрабатывается',
       _ => 'В очереди',
     };
-    final resume = record.status == 'completed' && record.lastPositionMs > 0
-        ? 'Продолжить с ${_duration(record.lastPositionMs / 1000)}'
+    final resumePage = grouped.where((page) => page.lastPositionMs > 0).toList();
+    final resume = resumePage.isNotEmpty
+        ? pageCount == 1
+            ? 'Продолжить с ${_duration(resumePage.last.lastPositionMs / 1000)}'
+            : 'Продолжить со страницы ${resumePage.last.pageOrder + 1}, ${_duration(resumePage.last.lastPositionMs / 1000)}'
         : null;
     return Semantics(
       button: true,
       label:
-          '${ordinal == null ? '' : 'Лекция $ordinal. '}${record.title}, ${_date(record.createdAt)}, $status${duration > 0 ? ', ${_duration(duration)}' : ''}${resume == null ? '' : ', $resume'}',
+          '${ordinal == null ? '' : 'Лекция $ordinal. '}${record.title}, ${_pagesLabel(pageCount)}, ${_date(record.createdAt)}, $status${duration > 0 ? ', ${_duration(duration)}' : ''}${resume == null ? '' : ', $resume'}',
       child: Card(
           clipBehavior: Clip.antiAlias,
           child: InkWell(
@@ -655,7 +770,7 @@ class LectureTile extends StatelessWidget {
                 child: Row(children: [
               Container(
                   width: 5,
-                  color: record.status == 'failed'
+                  color: groupStatus == 'failed'
                       ? scheme.error
                       : scheme.secondary),
               Expanded(
@@ -683,6 +798,11 @@ class LectureTile extends StatelessWidget {
                                   fontWeight: FontWeight.w800,
                                   letterSpacing: .9)),
                           const SizedBox(height: 5),
+                          if (pageCount > 1)
+                            Text(_pagesLabel(pageCount),
+                                style: TextStyle(
+                                    color: scheme.primary,
+                                    fontWeight: FontWeight.w700)),
                           Text(record.title,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,

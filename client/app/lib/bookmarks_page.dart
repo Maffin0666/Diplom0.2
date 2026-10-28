@@ -21,11 +21,20 @@ class BookmarksPage extends StatefulWidget {
 }
 
 class _BookmarksPageState extends State<BookmarksPage> {
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final chunks = widget.record.manifest?.chunks ?? const <LectureChunk>[];
     final indexes = widget.record.bookmarkIndexes;
     return VoicePage(
+        scrollController: _scroll,
         onCommand: (intent) async {
           if (intent.command == AppCommand.fragment && intent.number != null) {
             final index = intent.number! - 1;
@@ -51,12 +60,14 @@ class _BookmarksPageState extends State<BookmarksPage> {
                     child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 720),
               child: ListView(
+                controller: _scroll,
                 padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
                 children: [
                   const EditorialHeading(
                     kicker: 'быстрые переходы',
                     title: 'Избранные места',
-                    subtitle: 'Нажмите строку, чтобы перейти к ней в записи.',
+                    subtitle: 'Нажмите строку или скажите «закладка два», '
+                        'чтобы перейти к ней в записи.',
                   ),
                   const SizedBox(height: 22),
                   if (indexes.isEmpty)
@@ -98,6 +109,8 @@ class _BookmarksPageState extends State<BookmarksPage> {
                         )),
                         IconButton(
                           tooltip: 'Убрать закладку у фрагмента ${index + 1}',
+                          constraints: const BoxConstraints(
+                              minWidth: 64, minHeight: 64),
                           onPressed: () async {
                             await widget.onRemove(index);
                             if (mounted) setState(() {});

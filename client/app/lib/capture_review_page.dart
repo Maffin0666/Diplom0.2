@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -5,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'app_preferences.dart';
 import 'text_frame_assessment.dart';
 import 'voice_commands.dart';
 import 'voice_navigation.dart';
@@ -78,6 +80,31 @@ class _CaptureReviewPageState extends State<CaptureReviewPage> {
   String _error = '';
   bool _confirming = false;
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_announceInspection());
+    });
+  }
+
+  Future<void> _announceInspection() async {
+    if (!PreferencesScope.of(context).spokenHints) return;
+    String message;
+    try {
+      final notes = await _inspection;
+      message = notes.isEmpty
+          ? 'Быстрая проверка не обнаружила явных проблем со снимком. '
+              'Можно отправить его на распознавание или переснять.'
+          : 'Проверьте снимок. ${notes.join(' ')} '
+              'Можно переснять или отправить этот кадр.';
+    } catch (_) {
+      message = 'Не удалось проверить качество снимка. '
+          'Можете переснять или отправить его на распознавание.';
+    }
+    if (mounted) await VoiceScope.maybeOf(context)?.announce(message);
+  }
+
   Future<void> _confirm() async {
     if (_confirming) return;
     setState(() => _confirming = true);
@@ -120,93 +147,112 @@ class _CaptureReviewPageState extends State<CaptureReviewPage> {
             child: Center(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 760),
-                child: ListView(children: [
-                  SizedBox(
-                    height: (MediaQuery.sizeOf(context).height * .48)
-                        .clamp(210.0, 420.0),
-                    child: InteractiveViewer(
-                      minScale: .8,
-                      maxScale: 5,
-                      child: Center(
-                        child: Image.file(
-                          File(widget.photo.path),
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, __, ___) => const Text(
-                            'Не удалось открыть снимок. Попробуйте ещё раз.',
+                child: LayoutBuilder(builder: (context, bounds) {
+                  final landscape = bounds.maxWidth > bounds.maxHeight &&
+                      bounds.maxHeight < 500;
+                  final confirmationActions = <Widget>[
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(minHeight: 64),
+                      child: FilledButton.icon(
+                        onPressed: _confirming ? null : _confirm,
+                        icon: const Icon(Icons.check_rounded),
+                        label: const Text('Использовать снимок'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(minHeight: 56),
+                      child: OutlinedButton.icon(
+                        onPressed: () =>
+                            Navigator.of(context).pop(CaptureDecision.retry),
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: Text(widget.retryLabel),
+                      ),
+                    ),
+                  ];
+                  final sections = <Widget>[
+                    SizedBox(
+                      height: (MediaQuery.sizeOf(context).height * .48)
+                          .clamp(210.0, 420.0),
+                      child: InteractiveViewer(
+                        minScale: .8,
+                        maxScale: 5,
+                        child: Center(
+                          child: Image.file(
+                            File(widget.photo.path),
+                            fit: BoxFit.contain,
+                            semanticLabel: 'Снятая страница конспекта',
+                            errorBuilder: (_, __, ___) => const Text(
+                              'Не удалось открыть снимок. Попробуйте ещё раз.',
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text('Виден ли весь текст?',
-                            style: Theme.of(context).textTheme.titleLarge),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Увеличьте фото и проверьте края страницы, резкость букв и свет. '
-                          'После подтверждения снимок отправится на распознавание.',
-                        ),
-                        const SizedBox(height: 8),
-                        FutureBuilder<List<String>>(
-                          future: _inspection,
-                          builder: (context, snapshot) {
-                            if (snapshot.hasError) {
-                              return const Text(
-                                  'Проверьте снимок глазами перед отправкой.');
-                            }
-                            if (!snapshot.hasData) {
-                              return const Text('Проверяем качество снимка…');
-                            }
-                            if (snapshot.data!.isEmpty) {
-                              return const Text(
-                                  'Проверьте снимок и подтвердите отправку.');
-                            }
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                for (final note in snapshot.data!)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 4),
-                                    child: Text('• $note'),
-                                  ),
-                              ],
-                            );
-                          },
-                        ),
-                        const SizedBox(height: 12),
-                        if (_error.isNotEmpty) ...[
-                          Text(_error,
-                              style: TextStyle(
-                                  color: Theme.of(context).colorScheme.error,
-                                  fontWeight: FontWeight.bold)),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (landscape) ...[
+                            ...confirmationActions,
+                            const SizedBox(height: 12),
+                          ],
+                          Text('Виден ли весь текст?',
+                              style: Theme.of(context).textTheme.titleLarge),
                           const SizedBox(height: 8),
+                          const Text(
+                            'Увеличьте фото и проверьте края страницы, резкость букв и свет. '
+                            'После подтверждения снимок отправится на распознавание.',
+                          ),
+                          const SizedBox(height: 8),
+                          FutureBuilder<List<String>>(
+                            future: _inspection,
+                            builder: (context, snapshot) {
+                              if (snapshot.hasError) {
+                                return const Text(
+                                    'Не удалось проверить качество снимка. Можно переснять его или отправить на распознавание.');
+                              }
+                              if (!snapshot.hasData) {
+                                return const Text('Проверяем качество снимка…');
+                              }
+                              if (snapshot.data!.isEmpty) {
+                                return const Text(
+                                    'Проверьте снимок и подтвердите отправку.');
+                              }
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  for (final note in snapshot.data!)
+                                    Padding(
+                                      padding: const EdgeInsets.only(bottom: 4),
+                                      child: Text('• $note'),
+                                    ),
+                                ],
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          if (_error.isNotEmpty) ...[
+                            Text(_error,
+                                style: TextStyle(
+                                    color: Theme.of(context).colorScheme.error,
+                                    fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 8),
+                          ],
+                          if (!landscape) ...confirmationActions,
                         ],
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(minHeight: 64),
-                          child: FilledButton.icon(
-                            onPressed: _confirming ? null : _confirm,
-                            icon: const Icon(Icons.check_rounded),
-                            label: const Text('Использовать снимок'),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(minHeight: 56),
-                          child: OutlinedButton.icon(
-                            onPressed: () => Navigator.of(context)
-                                .pop(CaptureDecision.retry),
-                            icon: const Icon(Icons.refresh_rounded),
-                            label: Text(widget.retryLabel),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
-                ]),
+                  ];
+                  return landscape
+                      ? Row(children: [
+                          Expanded(child: sections.first),
+                          const VerticalDivider(width: 1),
+                          Expanded(child: ListView(children: [sections.last])),
+                        ])
+                      : ListView(children: sections);
+                }),
               ),
             ),
           ),

@@ -299,11 +299,66 @@
         ],
         "summary": "Command",
         "operationId": "command_api_v1_voice_command_post",
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "command",
+                "dictation"
+              ],
+              "type": "string",
+              "default": "command",
+              "title": "Mode"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "$ref": "#/components/schemas/Body_command_api_v1_voice_command_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/help/speech": {
+      "post": {
+        "tags": [
+          "Help"
+        ],
+        "summary": "Speech",
+        "operationId": "speech_api_v1_help_speech_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HelpSpeechRequest"
               }
             }
           },
@@ -314,7 +369,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Speech Api V1 Help Speech Post"
+                }
               }
             }
           },
@@ -467,6 +528,21 @@
           "models_loaded"
         ],
         "title": "HealthResponse"
+      },
+      "HelpSpeechRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 3500,
+            "minLength": 1,
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "HelpSpeechRequest"
       },
       "RecognitionResponse": {
         "properties": {

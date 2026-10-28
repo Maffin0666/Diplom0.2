@@ -53,6 +53,9 @@ class LyricsPlayer extends StatefulWidget {
       required this.onPlayPause,
       required this.onSeek,
       required this.onSeekTime,
+      this.onSeekAdjacent,
+      this.lecturePosition,
+      this.lectureDuration,
       required this.onSpeed,
       required this.onBookmark,
       required this.onEditTranscript,
@@ -60,6 +63,13 @@ class LyricsPlayer extends StatefulWidget {
       this.onExportAudio,
       this.onExplainFormula,
       this.onOpenBookmarks,
+      this.pages = const [],
+      this.onOpenPage,
+      this.onEditPage,
+      this.onOpenPageAtChunk,
+      this.onAddPage,
+      this.onMovePage,
+      this.onRemovePage,
       this.scrollController,
       required this.pose,
       required this.message,
@@ -73,8 +83,17 @@ class LyricsPlayer extends StatefulWidget {
   final VoidCallback? onExportText, onExportAudio;
   final ValueChanged<int>? onExplainFormula;
   final VoidCallback? onOpenBookmarks;
+  final List<LectureRecord> pages;
+  final ValueChanged<LectureRecord>? onOpenPage;
+  final ValueChanged<LectureRecord>? onEditPage;
+  final void Function(LectureRecord, String)? onOpenPageAtChunk;
+  final Future<void> Function()? onAddPage;
+  final Future<void> Function(LectureRecord, int)? onMovePage;
+  final Future<void> Function(LectureRecord)? onRemovePage;
   final ValueChanged<int> onSeek;
   final ValueChanged<Duration> onSeekTime;
+  final ValueChanged<bool>? onSeekAdjacent;
+  final Duration? lecturePosition, lectureDuration;
   final ValueChanged<double> onSpeed;
   final ScrollController? scrollController;
   final LectoriaPose pose;
@@ -94,6 +113,171 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
   DateTime? _firstTwoFingerTap;
   bool _pairRegistered = false;
   ScrollController get _scroll => widget.scrollController ?? _ownScroll;
+
+  Future<void> _searchTranscript() async {
+    final controller = TextEditingController();
+    try {
+      final selected = await showModalBottomSheet<({LectureRecord page, int index})>(
+        context: context,
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (sheetContext) => StatefulBuilder(builder: (context, update) {
+          final query = controller.text.trim().toLowerCase().replaceAll('ё', 'е');
+          final pages = widget.pages.isEmpty ? [widget.record] : widget.pages;
+          final matches = query.isEmpty ? <({LectureRecord page, int index})>[] : [
+            for (final page in pages)
+              for (var i = 0; i < (page.manifest?.chunks.length ?? 0); i++)
+                if (page.manifest!.chunks[i].text.toLowerCase().replaceAll('ё', 'е').contains(query))
+                  (page: page, index: i),
+          ];
+          return SafeArea(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(16, 8, 16,
+                  MediaQuery.viewInsetsOf(context).bottom + 16),
+              child: SizedBox(
+                height: MediaQuery.sizeOf(context).height * .62,
+                child: Column(children: [
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    onChanged: (_) => update(() {}),
+                    decoration: const InputDecoration(
+                      labelText: 'Найти в этой лекции',
+                      prefixIcon: Icon(Icons.search_rounded),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(child: query.isEmpty
+                      ? const Center(child: Text('Введите слово или часть фразы'))
+                      : matches.isEmpty
+                          ? const Center(child: Text('Совпадений нет'))
+                          : ListView.builder(
+                              itemCount: matches.length,
+                              itemBuilder: (context, position) {
+                                final match = matches[position];
+                                final chunk = match.page.manifest!.chunks[match.index];
+                                return ListTile(
+                                  leading: Text('${match.index + 1}'),
+                                  title: Text(chunk.text,
+                                      maxLines: 3,
+                                      overflow: TextOverflow.ellipsis),
+                                  subtitle: Text('Страница ${pages.indexOf(match.page) + 1} · ${chunk.isFormula ? 'Формула' : 'Текст'}'),
+                                  onTap: () => Navigator.pop(sheetContext, match),
+                                );
+                              },
+                            )),
+                ]),
+              ),
+            ),
+          );
+        }),
+      );
+      if (selected != null && mounted) {
+        if (selected.page == widget.record) {
+          widget.onSeek(selected.index);
+        } else {
+          widget.onOpenPageAtChunk?.call(selected.page,
+              selected.page.manifest!.chunks[selected.index].id);
+        }
+      }
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  Future<void> _managePages() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheet) => StatefulBuilder(builder: (context, update) {
+        final pages = [...widget.pages]..sort((a, b) => a.pageOrder.compareTo(b.pageOrder));
+        return SafeArea(child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * .72,
+          child: Column(children: [
+            ListTile(title: const Text('Страницы лекции'),
+              subtitle: Text('${pages.length} страниц'),
+              trailing: IconButton(tooltip: 'Добавить страницу',
+                onPressed: widget.onAddPage == null ? null : () {
+                  Navigator.pop(sheet);
+                  widget.onAddPage!();
+                }, icon: const Icon(Icons.add_rounded))),
+            Expanded(child: ListView.builder(
+              itemCount: pages.length,
+              itemBuilder: (context, index) {
+                final page = pages[index];
+                return ListTile(
+                  title: Text('Страница ${index + 1}${page == widget.record ? ' · открыта' : ''}'),
+                  subtitle: Text(page.manifest?.fullText.trim().split('\n').first ?? 'Ожидает обработки',
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                  onTap: () {
+                    Navigator.pop(sheet);
+                    if (page != widget.record) widget.onOpenPage?.call(page);
+                  },
+                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                    IconButton(tooltip: 'Исправить текст страницы ${index + 1}',
+                      onPressed: widget.onEditPage == null || page.manifest?.chunks.isNotEmpty != true
+                          ? null : () {
+                        Navigator.pop(sheet);
+                        widget.onEditPage!(page);
+                      }, icon: const Icon(Icons.edit_note_rounded)),
+                    PopupMenuButton<int>(
+                      tooltip: 'Действия со страницей ${index + 1}',
+                      icon: const Icon(Icons.more_vert_rounded),
+                      itemBuilder: (_) => [
+                        PopupMenuItem(value: -1, enabled: index > 0 && widget.onMovePage != null,
+                          child: const Text('Переместить выше')),
+                        PopupMenuItem(value: 1, enabled: index + 1 < pages.length && widget.onMovePage != null,
+                          child: const Text('Переместить ниже')),
+                        PopupMenuItem(value: 0, enabled: pages.length > 1 && widget.onRemovePage != null,
+                          child: const Text('Удалить страницу')),
+                      ],
+                      onSelected: (action) async {
+                        if (action != 0) {
+                        try {
+                          await widget.onMovePage!(page, action);
+                          if (context.mounted) update(() {});
+                        } catch (error) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(userError(error))));
+                          }
+                        }
+                        return;
+                        }
+                        final approved = await showDialog<bool>(context: context,
+                          builder: (dialog) => AlertDialog(
+                            title: Text('Удалить страницу ${index + 1}?'),
+                            content: const Text('Снимок и аудио этой страницы будут удалены с телефона.'),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Отмена')),
+                              FilledButton(onPressed: () => Navigator.pop(dialog, true), child: const Text('Удалить')),
+                            ]));
+                        if (approved != true || !context.mounted) return;
+                        if (page == widget.record) Navigator.pop(sheet);
+                        try {
+                          await widget.onRemovePage!(page);
+                          if (page != widget.record && context.mounted) {
+                            update(() {});
+                          }
+                        } catch (error) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(this.context).showSnackBar(
+                                SnackBar(content: Text(userError(error))));
+                          }
+                        }
+                      },
+                    ),
+                  ]),
+                );
+              },
+            )),
+          ]),
+        ));
+      }),
+    );
+  }
 
   @override
   void initState() {
@@ -193,10 +377,16 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
     final manifest = widget.record.manifest;
     final chunks = manifest?.chunks ?? [];
     final current = manifest?.chunkAt(widget.position) ?? -1;
-    final total = manifest?.totalDuration ?? 0.0;
-    final compact = MediaQuery.textScalerOf(context).scale(1) > 1.5;
-    final narrowActions = MediaQuery.textScalerOf(context).scale(1) > 2.2;
-    final position = (widget.position.inMilliseconds / 1000)
+    final total = (widget.lectureDuration ??
+        Duration(milliseconds: ((manifest?.totalDuration ?? 0) * 1000).round()))
+        .inMilliseconds / 1000;
+    final size = MediaQuery.sizeOf(context);
+    final landscape = size.width > size.height;
+    final compact =
+        landscape || MediaQuery.textScalerOf(context).scale(1) > 1.5;
+    final narrowActions =
+        landscape || MediaQuery.textScalerOf(context).scale(1) > 2.2;
+    final position = ((widget.lecturePosition ?? widget.position).inMilliseconds / 1000)
         .clamp(0, total <= 0 ? 1 : total)
         .toDouble();
     return Listener(
@@ -207,6 +397,16 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
           appBar: AppBar(
               title: Text(compact ? 'Лекция' : 'Студия лекции'),
               actions: [
+                IconButton(
+                  tooltip: 'Страницы лекции',
+                  onPressed: _managePages,
+                  icon: const Icon(Icons.layers_outlined),
+                ),
+                IconButton(
+                  tooltip: 'Найти в лекции',
+                  onPressed: _searchTranscript,
+                  icon: const Icon(Icons.search_rounded),
+                ),
                 if (narrowActions)
                   PopupMenuButton<String>(
                     tooltip: 'Действия с лекцией',
@@ -223,9 +423,9 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
                       PopupMenuItem(
                           value: 'bookmarks', child: Text('Закладки')),
                       PopupMenuItem(
-                          value: 'text', child: Text('Поделиться текстом')),
+                          value: 'text', child: Text('Весь текст лекции')),
                       PopupMenuItem(
-                          value: 'audio', child: Text('Поделиться аудио')),
+                          value: 'audio', child: Text('Аудио всех страниц и метки')),
                     ],
                   ),
                 if (!narrowActions) ...[
@@ -238,10 +438,10 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
                     },
                     itemBuilder: (_) => const [
                       PopupMenuItem(
-                          value: 'text', child: Text('Поделиться текстом')),
+                          value: 'text', child: Text('Весь текст лекции')),
                       PopupMenuItem(
                           value: 'audio',
-                          child: Text('Поделиться аудио и метками')),
+                          child: Text('Аудио всех страниц и метки')),
                     ],
                   ),
                   IconButton(
@@ -260,35 +460,36 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
               child: SafeArea(
                   child: Center(
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 760),
+              constraints: BoxConstraints(maxWidth: landscape ? 1100 : 760),
               child: Column(children: [
-                Padding(
-                  padding: EdgeInsets.fromLTRB(
-                      20, compact ? 6 : 12, 20, compact ? 7 : 13),
-                  child: Row(children: [
-                    AnimatedLectoriaSprite(
-                        pose: widget.pose, size: compact ? 42 : 58),
-                    const SizedBox(width: 12),
-                    Expanded(
-                        child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                          if (!compact) ...[
-                            const SectionKicker('читайте вместе с Лекторией'),
-                            const SizedBox(height: 5),
-                          ],
-                          Text(widget.record.title,
-                              maxLines: compact ? 1 : 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.titleLarge),
-                        ])),
-                    IconButton.outlined(
-                      tooltip: 'Исходный снимок',
-                      onPressed: () => _showPhoto(context, current),
-                      icon: const Icon(Icons.image_outlined),
-                    ),
-                  ]),
-                ),
+                if (!landscape)
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(
+                        20, compact ? 6 : 12, 20, compact ? 7 : 13),
+                    child: Row(children: [
+                      AnimatedLectoriaSprite(
+                          pose: widget.pose, size: compact ? 42 : 58),
+                      const SizedBox(width: 12),
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            if (!compact) ...[
+                              const SectionKicker('читайте вместе с Лекторией'),
+                              const SizedBox(height: 5),
+                            ],
+                            Text(widget.record.title,
+                                maxLines: compact ? 1 : 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleLarge),
+                          ])),
+                      IconButton.outlined(
+                        tooltip: 'Исходный снимок',
+                        onPressed: () => _showPhoto(context, current),
+                        icon: const Icon(Icons.image_outlined),
+                      ),
+                    ]),
+                  ),
                 Divider(height: 1, color: scheme.outlineVariant),
                 Expanded(
                     child: GestureDetector(
@@ -315,6 +516,39 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
                               ),
                               clipBehavior: Clip.antiAlias,
                               child: Column(children: [
+                                if (widget.pages.isNotEmpty) ...[
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+                                    child: Wrap(
+                                      crossAxisAlignment: WrapCrossAlignment.center,
+                                      spacing: 8,
+                                      children: [
+                                        Text('Страница ${widget.pages.indexOf(widget.record) + 1} из ${widget.pages.length}',
+                                            style: Theme.of(context).textTheme.titleMedium),
+                                        IconButton(
+                                          tooltip: 'Предыдущая страница',
+                                          onPressed: widget.pages.indexOf(widget.record) > 0
+                                              ? () => widget.onOpenPage?.call(widget.pages[widget.pages.indexOf(widget.record) - 1])
+                                              : null,
+                                          icon: const Icon(Icons.chevron_left_rounded),
+                                        ),
+                                        IconButton(
+                                          tooltip: 'Следующая страница',
+                                          onPressed: widget.pages.indexOf(widget.record) + 1 < widget.pages.length
+                                              ? () => widget.onOpenPage?.call(widget.pages[widget.pages.indexOf(widget.record) + 1])
+                                              : null,
+                                          icon: const Icon(Icons.chevron_right_rounded),
+                                        ),
+                                        TextButton.icon(
+                                          onPressed: widget.onAddPage,
+                                          icon: const Icon(Icons.add_rounded),
+                                          label: const Text('Добавить'),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Divider(height: 1, color: scheme.outlineVariant),
+                                ],
                                 Padding(
                                   padding:
                                       const EdgeInsets.fromLTRB(17, 14, 17, 11),
@@ -372,8 +606,8 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
                     padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
                     child: ErrorNotice(message: widget.error),
                   ),
-                _transport(
-                    context, current, chunks.length, total, position, compact),
+                _transport(context, current, chunks.length, total, position,
+                    compact, landscape),
               ]),
             ),
           ))),
@@ -521,9 +755,10 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
   }
 
   Widget _transport(BuildContext context, int current, int count, double total,
-      double seconds, bool compact) {
+      double seconds, bool compact, bool landscape) {
     final scheme = Theme.of(context).colorScheme;
     final contrast = PreferencesScope.of(context).highContrast;
+    final touchSize = landscape ? 48.0 : 64.0;
     return Container(
       decoration: BoxDecoration(
         color: scheme.surfaceContainerLow,
@@ -534,45 +769,51 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
         )),
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+        padding: landscape
+            ? const EdgeInsets.fromLTRB(12, 3, 12, 3)
+            : const EdgeInsets.fromLTRB(16, 8, 16, 10),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Row(children: [
-            Expanded(
-                child: Text(
-              count == 0
-                  ? 'Нет фрагментов'
-                  : 'Фрагмент ${current + 1} из $count',
-              style: Theme.of(context).textTheme.titleMedium,
-            )),
-            if (compact)
-              IconButton(
-                tooltip: 'Открыть закладки',
-                onPressed: widget.onOpenBookmarks,
-                icon: const Icon(Icons.bookmarks_outlined),
-              )
-            else
-              TextButton.icon(
-                onPressed: widget.onOpenBookmarks,
-                icon: const Icon(Icons.bookmarks_outlined),
-                label: Text('Закладки ${widget.record.bookmarkIndexes.length}'),
+          if (!landscape)
+            Row(children: [
+              Expanded(
+                  child: Text(
+                count == 0
+                    ? 'Нет фрагментов'
+                    : 'Фрагмент ${current + 1} из $count',
+                style: Theme.of(context).textTheme.titleMedium,
+              )),
+              if (compact)
+                IconButton(
+                  tooltip: 'Открыть закладки',
+                  onPressed: widget.onOpenBookmarks,
+                  icon: const Icon(Icons.bookmarks_outlined),
+                )
+              else
+                TextButton.icon(
+                  onPressed: widget.onOpenBookmarks,
+                  icon: const Icon(Icons.bookmarks_outlined),
+                  label:
+                      Text('Закладки ${widget.record.bookmarkIndexes.length}'),
+                ),
+            ]),
+          if (!landscape)
+            Semantics(
+              key: const ValueKey('player_transport'),
+              label: 'Позиция воспроизведения',
+              value: '${(widget.lecturePosition ?? widget.position).inSeconds} из ${total.round()} секунд',
+              child: Slider(
+                value: seconds,
+                min: 0,
+                max: total <= 0 ? 1 : total,
+                onChanged: (value) => widget
+                    .onSeekTime(Duration(milliseconds: (value * 1000).round())),
               ),
-          ]),
-          Semantics(
-            key: const ValueKey('player_transport'),
-            label: 'Позиция воспроизведения',
-            value: '${widget.position.inSeconds} из ${total.round()} секунд',
-            child: Slider(
-              value: seconds,
-              min: 0,
-              max: total <= 0 ? 1 : total,
-              onChanged: (value) => widget
-                  .onSeekTime(Duration(milliseconds: (value * 1000).round())),
             ),
-          ),
-          Wrap(alignment: WrapAlignment.spaceBetween, spacing: 16, children: [
-            Text(_time(widget.position)),
-            Text(_time(Duration(seconds: total.round()))),
-          ]),
+          if (!landscape)
+            Wrap(alignment: WrapAlignment.spaceBetween, spacing: 16, children: [
+              Text(_time(widget.lecturePosition ?? widget.position)),
+              Text(_time(Duration(seconds: total.round()))),
+            ]),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             IconButton.outlined(
               tooltip: widget.record.hasBookmark(current)
@@ -582,15 +823,25 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
               icon: Icon(widget.record.hasBookmark(current)
                   ? Icons.bookmark_rounded
                   : Icons.bookmark_outline_rounded),
-              constraints: const BoxConstraints(minWidth: 64, minHeight: 64),
+              constraints:
+                  BoxConstraints(minWidth: touchSize, minHeight: touchSize),
               padding: EdgeInsets.zero,
             ),
             IconButton.filledTonal(
               tooltip: 'Предыдущий фрагмент',
-              onPressed: current > 0 ? () => widget.onSeek(current - 1) : null,
+              onPressed: current > 0 || widget.pages.indexOf(widget.record) > 0
+                  ? () {
+                      if (widget.onSeekAdjacent != null) {
+                        widget.onSeekAdjacent!(false);
+                      } else if (current > 0) {
+                        widget.onSeek(current - 1);
+                      }
+                    }
+                  : null,
               icon: const Icon(Icons.skip_previous_rounded),
               iconSize: 25,
-              constraints: const BoxConstraints(minWidth: 64, minHeight: 64),
+              constraints:
+                  BoxConstraints(minWidth: touchSize, minHeight: touchSize),
               padding: EdgeInsets.zero,
             ),
             IconButton.filled(
@@ -600,21 +851,31 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
                   ? Icons.pause_rounded
                   : Icons.play_arrow_rounded),
               iconSize: 34,
-              constraints: const BoxConstraints(minWidth: 64, minHeight: 64),
+              constraints:
+                  BoxConstraints(minWidth: touchSize, minHeight: touchSize),
               padding: EdgeInsets.zero,
             ),
             IconButton.filledTonal(
               tooltip: 'Следующий фрагмент',
-              onPressed:
-                  current + 1 < count ? () => widget.onSeek(current + 1) : null,
+              onPressed: current + 1 < count ||
+                      widget.pages.indexOf(widget.record) + 1 < widget.pages.length
+                  ? () {
+                      if (widget.onSeekAdjacent != null) {
+                        widget.onSeekAdjacent!(true);
+                      } else if (current + 1 < count) {
+                        widget.onSeek(current + 1);
+                      }
+                    }
+                  : null,
               icon: const Icon(Icons.skip_next_rounded),
               iconSize: 25,
-              constraints: const BoxConstraints(minWidth: 64, minHeight: 64),
+              constraints:
+                  BoxConstraints(minWidth: touchSize, minHeight: touchSize),
               padding: EdgeInsets.zero,
             ),
             SizedBox(
-                width: 64,
-                height: 64,
+                width: touchSize,
+                height: touchSize,
                 child: PopupMenuButton<double>(
                   tooltip: 'Скорость воспроизведения',
                   icon: const Icon(Icons.speed_rounded),
@@ -623,6 +884,8 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
                   onSelected: widget.onSpeed,
                   itemBuilder: (_) => [
                     for (final speed in [
+                      .25,
+                      .5,
                       .75,
                       1.0,
                       1.25,
@@ -656,10 +919,10 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      showDragHandle: true,
+      showDragHandle: false,
       builder: (_) => SafeArea(
         child: SizedBox(
-          height: MediaQuery.sizeOf(context).height * .75,
+          height: MediaQuery.sizeOf(context).height * .92,
           child: Column(children: [
             ValueListenableBuilder<int>(
               valueListenable: _photoIndex,
@@ -670,31 +933,18 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
                         selected < manifest.chunks.length
                     ? manifest.chunks[selected]
                     : null;
-                return Column(children: [
-                  Text(
-                    chunk == null
-                        ? 'Исходный снимок'
-                        : 'Фрагмент ${selected + 1} на снимке',
-                    style: Theme.of(context).textTheme.titleLarge,
+                return ListTile(
+                  title: Text(chunk == null
+                      ? 'Исходный снимок'
+                      : 'Фрагмент ${selected + 1} на снимке'),
+                  subtitle:
+                      const Text('Разведите пальцы, чтобы увеличить фото'),
+                  trailing: IconButton(
+                    tooltip: 'Закрыть фото',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
                   ),
-                  if (chunk != null) ...[
-                    const SizedBox(height: 8),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 16),
-                      child: Text('Выделена область текущего фрагмента. '
-                          'Если сервер объединил строки, показана вся область.'),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: PhotoRegionOverview(
-                        imageFuture: _photoFuture,
-                        chunk: chunk,
-                        originalWidth: manifest!.imageWidth ?? 0,
-                        originalHeight: manifest.imageHeight ?? 0,
-                      ),
-                    ),
-                  ],
-                ]);
+                );
               },
             ),
             Expanded(
@@ -724,23 +974,35 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
                       ),
                     );
                   }
-                  final width = MediaQuery.sizeOf(context).width - 32;
-                  return InteractiveViewer(
-                    constrained: false,
-                    minScale: .5,
-                    maxScale: 6,
-                    child: SizedBox(
-                      width: width,
-                      height: width * imageHeight / imageWidth,
-                      child: PhotoRegionOverview(
-                        imageFuture: _photoFuture,
-                        chunk: chunk,
-                        originalWidth: imageWidth,
-                        originalHeight: imageHeight,
-                        maxHeight: double.infinity,
+                  return LayoutBuilder(builder: (context, bounds) {
+                    final scale = (bounds.maxWidth / imageWidth)
+                        .clamp(0.0, bounds.maxHeight / imageHeight);
+                    final width = imageWidth * scale;
+                    final height = imageHeight * scale;
+                    return InteractiveViewer(
+                      minScale: 1,
+                      maxScale: 6,
+                      child: Center(
+                        child: SizedBox(
+                          width: width,
+                          height: height,
+                          child: PhotoRegionOverview(
+                            imageFuture: _photoFuture,
+                            chunk: chunk,
+                            originalWidth: imageWidth,
+                            originalHeight: imageHeight,
+                            maxHeight: double.infinity,
+                            chunks: manifest!.chunks,
+                            onSelect: (index) {
+                              _photoIndex.value = index;
+                              widget.onSeek(index);
+                              Navigator.of(context).pop();
+                            },
+                          ),
+                        ),
                       ),
-                    ),
-                  );
+                    );
+                  });
                 },
               ),
             ),
@@ -751,5 +1013,10 @@ class _LyricsPlayerState extends State<LyricsPlayer> {
   }
 }
 
-String _time(Duration time) =>
-    '${time.inMinutes.remainder(60).toString().padLeft(2, '0')}:${time.inSeconds.remainder(60).toString().padLeft(2, '0')}';
+String _time(Duration time) {
+  final minutes = time.inMinutes.remainder(60).toString().padLeft(2, '0');
+  final seconds = time.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return time.inHours > 0
+      ? '${time.inHours}:$minutes:$seconds'
+      : '$minutes:$seconds';
+}

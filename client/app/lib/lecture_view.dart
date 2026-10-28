@@ -27,6 +27,9 @@ class LectureView extends StatelessWidget {
     required this.onPlayPause,
     required this.onSeek,
     required this.onSeekTime,
+    this.onSeekAdjacent,
+    this.lecturePosition,
+    this.lectureDuration,
     required this.onListen,
     required this.onServerVoice,
     required this.onVoiceHelp,
@@ -39,6 +42,13 @@ class LectureView extends StatelessWidget {
     this.onExportAudio,
     this.onExplainFormula,
     this.onOpenBookmarks,
+    this.pages = const [],
+    this.onOpenPage,
+    this.onEditPage,
+    this.onOpenPageAtChunk,
+    this.onAddPage,
+    this.onMovePage,
+    this.onRemovePage,
     this.actionPose,
     this.scrollController,
   });
@@ -55,9 +65,18 @@ class LectureView extends StatelessWidget {
   final VoidCallback? onExportText, onExportAudio;
   final ValueChanged<int>? onExplainFormula;
   final VoidCallback? onOpenBookmarks;
+  final List<LectureRecord> pages;
+  final ValueChanged<LectureRecord>? onOpenPage;
+  final ValueChanged<LectureRecord>? onEditPage;
+  final void Function(LectureRecord, String)? onOpenPageAtChunk;
+  final Future<void> Function()? onAddPage;
+  final Future<void> Function(LectureRecord, int)? onMovePage;
+  final Future<void> Function(LectureRecord)? onRemovePage;
   final LectoriaPose? actionPose;
   final ValueChanged<int> onSeek;
   final ValueChanged<Duration> onSeekTime;
+  final ValueChanged<bool>? onSeekAdjacent;
+  final Duration? lecturePosition, lectureDuration;
   final ValueChanged<double> onSpeed;
 
   @override
@@ -78,6 +97,9 @@ class LectureView extends StatelessWidget {
         onPlayPause: onPlayPause,
         onSeek: onSeek,
         onSeekTime: onSeekTime,
+        onSeekAdjacent: onSeekAdjacent,
+        lecturePosition: lecturePosition,
+        lectureDuration: lectureDuration,
         onSpeed: onSpeed,
         onBookmark: onBookmark,
         onEditTranscript: onEditTranscript,
@@ -85,6 +107,13 @@ class LectureView extends StatelessWidget {
         onExportAudio: onExportAudio,
         onExplainFormula: onExplainFormula,
         onOpenBookmarks: onOpenBookmarks,
+        pages: pages,
+        onOpenPage: onOpenPage,
+        onEditPage: onEditPage,
+        onOpenPageAtChunk: onOpenPageAtChunk,
+        onAddPage: onAddPage,
+        onMovePage: onMovePage,
+        onRemovePage: onRemovePage,
         scrollController: scrollController,
         pose: pose,
         message: message,

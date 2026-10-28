@@ -31,13 +31,13 @@ void main() {
         },
       ),
     ));
-    expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-        isNull);
+    final saveButton =
+        find.widgetWithText(FilledButton, 'Сохранить и озвучить');
+    expect(tester.widget<FilledButton>(saveButton).onPressed, isNull);
     await tester.enterText(
         find.byKey(const ValueKey('transcript_text_0')), 'Верный текст');
     await tester.pump();
-    expect(tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-        isNotNull);
+    expect(tester.widget<FilledButton>(saveButton).onPressed, isNotNull);
     await tester.tap(find.text('Сохранить и озвучить'));
     await tester.pump();
     expect(submitted, isNotNull);
@@ -157,5 +157,44 @@ void main() {
     await tester.pump();
     expect(submitted?.last.text, 'Исправленная последняя строка');
     expect(submitted?.first.text, 'Текст 0');
+  });
+
+  testWidgets('голосом меняются тип фрагмента и его произношение',
+      (tester) async {
+    final voice = VoiceNavigation();
+    addTearDown(voice.dispose);
+    List<ChunkCorrection>? submitted;
+    final manifest = LectureManifest.fromJson({
+      'task_id': 'formula',
+      'status': 'completed',
+      'chunks': [
+        {'id': 'line', 'index': 0, 'text': 'x^2', 'is_formula': false}
+      ],
+    });
+    await tester.pumpWidget(MaterialApp(
+      home: VoiceScope(
+        controller: voice,
+        child: TranscriptEditor(
+          manifest: manifest,
+          imagePath: 'missing.jpg',
+          onSave: (value) async => submitted = value,
+        ),
+      ),
+    ));
+    expect(await voice.dispatch(const AppVoiceIntent(AppCommand.markFormula)),
+        isTrue);
+    expect(await voice.dispatch(const AppVoiceIntent(AppCommand.dictateSpeech)),
+        isTrue);
+    expect(
+        await voice.dispatch(const AppVoiceIntent(AppCommand.unknown,
+            utterance: 'икс в квадрате')),
+        isTrue);
+    await tester.pump();
+    expect(find.text('икс в квадрате'), findsOneWidget);
+    await tester.ensureVisible(find.text('Сохранить и озвучить'));
+    await tester.tap(find.text('Сохранить и озвучить'));
+    await tester.pump();
+    expect(submitted?.single.isFormula, isTrue);
+    expect(submitted?.single.spokenText, 'икс в квадрате');
   });
 }

@@ -120,7 +120,18 @@ TextFrameAssessment assessTextFrame(Uint8List gray, int width, int height) {
       columnSquares / columnBrightness.length - meanBrightness * meanBrightness;
   // These deliberately conservative limits prevent automatic shots of
   // strongly textured objects. A real page can still be photographed by hand.
-  final consistent = rowVariance < 38 * 38 && columnVariance < 24 * 24;
+  // A notebook page can contain strong side lighting and a dark binding.
+  // Keep the gate permissive: this is framing guidance, not OCR validation.
+  final consistent = rowVariance < 55 * 55 && columnVariance < 45 * 45;
+  // Dense cursive can fill every sampled row, leaving no blank projection
+  // valley. Treat sustained character-like runs as text in that case.
+  if (lines < 2 &&
+      consistent &&
+      rows.length >= (bottom - top) * .65 &&
+      edgeSamples > 0 &&
+      edges / edgeSamples >= 3) {
+    lines = 2;
+  }
   return TextFrameAssessment(lines, meanBrightness,
       edgeStrength: edgeSamples == 0 ? 0 : edges / edgeSamples,
       directionHint: consistent && lines == 1 ? direction : null,

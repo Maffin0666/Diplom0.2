@@ -23,6 +23,14 @@ class SavedNotesPage extends StatefulWidget {
 }
 
 class _SavedNotesPageState extends State<SavedNotesPage> {
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
   Future<void> _rename(LectureRecord record, String title) async {
     await widget.onRename(record, title);
     if (mounted) setState(() {});
@@ -35,6 +43,7 @@ class _SavedNotesPageState extends State<SavedNotesPage> {
         for (final index in record.bookmarkIndexes) (record, index),
     ];
     return VoicePage(
+      scrollController: _scroll,
       onCommand: (intent) async {
         if (intent.command == AppCommand.bookmark && intent.number != null) {
           final ordinal = intent.number! - 1;
@@ -54,13 +63,14 @@ class _SavedNotesPageState extends State<SavedNotesPage> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 720),
             child: ListView(
+              controller: _scroll,
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
               children: [
                 const EditorialHeading(
                   kicker: 'ваша коллекция',
                   title: 'Заметки и закладки',
-                  subtitle:
-                      'Откройте лекцию или перейдите сразу к отмеченной строке.',
+                  subtitle: 'Откройте лекцию или перейдите к отмеченной строке. '
+                      'Для перехода голосом скажите «закладка два».',
                 ),
                 const SizedBox(height: 16),
                 if (widget.records.isEmpty)
@@ -90,6 +100,8 @@ class _SavedNotesPageState extends State<SavedNotesPage> {
                           )),
                           IconButton(
                             tooltip: 'Переименовать лекцию',
+                            constraints: const BoxConstraints(
+                                minWidth: 64, minHeight: 64),
                             onPressed: () => showRenameLectureDialog(
                                 context, record, _rename),
                             icon: const Icon(

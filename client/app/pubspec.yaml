@@ -21,6 +21,7 @@ dependencies:
   uuid: ^4.6.0
   just_audio_background: 0.0.1-beta.17
   share_plus: 11.1.0
+  archive: 3.6.1
 
 dev_dependencies:
   flutter_test:

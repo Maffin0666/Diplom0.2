@@ -420,12 +420,14 @@ class _SettingsPageState extends State<SettingsPage> {
                 style: Theme.of(context).textTheme.titleMedium),
             Slider(
                 value: (_draft['playback_speed'] as num).toDouble(),
-                min: .75,
+                min: .25,
                 max: 3,
-                divisions: 9,
+                divisions: 11,
                 onChanged: (v) => setState(() => _draft['playback_speed'] = v)),
             _toggle('auto_play', 'Начинать автоматически',
                 'Воспроизводить лекцию после загрузки аудио.'),
+            _toggle('spoken_actions', 'Озвучивать действия',
+                'Подтверждать снимок и готовность лекции голосом. После первой загрузки короткие фразы сохраняются на телефоне; без сервера используется системный голос.'),
             const Text(
                 'Скорость также можно менять в плеере. Исправление расшифровки создаёт новую озвучку с метками переходов.'),
           ],
@@ -684,6 +686,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final landscape = size.width > size.height && size.height < 500;
     final dark = _theme == ThemeMode.dark ||
         (_theme == ThemeMode.system &&
             Theme.of(context).brightness == Brightness.dark);
@@ -727,6 +731,14 @@ class _SettingsPageState extends State<SettingsPage> {
                         appBar: AppBar(
                             title: Text(_section ?? 'Настройки',
                                 maxLines: 1, overflow: TextOverflow.ellipsis),
+                            actions: [
+                              if (landscape)
+                                IconButton(
+                                  tooltip: 'Сохранить настройки',
+                                  onPressed: _busy ? null : _save,
+                                  icon: const Icon(Icons.check_rounded),
+                                ),
+                            ],
                             leading: BackButton(onPressed: () {
                               if (_section != null) {
                                 _selectSection(null);
@@ -780,27 +792,30 @@ class _SettingsPageState extends State<SettingsPage> {
                                                       message: _message),
                                           ],
                                         ))))),
-                        bottomNavigationBar: SafeArea(
-                          top: false,
-                          child: Container(
-                            padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerLow,
-                              border: Border(
-                                  top: BorderSide(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .outlineVariant)),
-                            ),
-                            child: FilledButton.icon(
-                              onPressed: _busy ? null : _save,
-                              icon: const Icon(Icons.check_rounded),
-                              label: const Text('Сохранить настройки'),
-                            ),
-                          ),
-                        ),
+                        bottomNavigationBar: landscape
+                            ? null
+                            : SafeArea(
+                                top: false,
+                                child: Container(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(20, 10, 20, 12),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .surfaceContainerLow,
+                                    border: Border(
+                                        top: BorderSide(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .outlineVariant)),
+                                  ),
+                                  child: FilledButton.icon(
+                                    onPressed: _busy ? null : _save,
+                                    icon: const Icon(Icons.check_rounded),
+                                    label: const Text('Сохранить настройки'),
+                                  ),
+                                ),
+                              ),
                       ),
                     )),
           ),

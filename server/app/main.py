@@ -10,7 +10,7 @@ from server.config import settings
 from server.app.models import RecognitionResponse, RecognitionStatus
 from server.app.task_store import TaskStore
 
-from .routes import health, recognition, voice
+from .routes import health, recognition, voice, help_speech
 from .utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -145,3 +145,4 @@ app.mount("/audio", StaticFiles(directory=str(settings.AUDIO_DIR)), name="audio"
 app.include_router(health.router)
 app.include_router(recognition.router)
 app.include_router(voice.router)
+app.include_router(help_speech.router)

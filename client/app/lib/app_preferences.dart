@@ -7,6 +7,7 @@ class AppPreferences {
     this.boldText = false,
     this.reduceMotion = false,
     this.spokenHints = true,
+    this.spokenActions = true,
     this.haptics = true,
     this.earcons = true,
     this.cameraGuidance = true,
@@ -17,7 +18,7 @@ class AppPreferences {
     this.autoPlay = false,
     this.showMascot = true,
     this.showVoiceDock = true,
-    this.autoCapture = false,
+    this.autoCapture = true,
     this.readingGuide = false,
     this.palette = 'standard',
     this.fontMode = 'system',
@@ -28,6 +29,7 @@ class AppPreferences {
       boldText,
       reduceMotion,
       spokenHints,
+      spokenActions,
       haptics,
       earcons;
   final bool cameraGuidance, continuousVoice, autoPlay;
@@ -44,6 +46,7 @@ class AppPreferences {
         boldText: json['bold_text'] == true,
         reduceMotion: json['reduce_motion'] == true,
         spokenHints: json['spoken_hints'] != false,
+        spokenActions: json['spoken_actions'] != false,
         haptics: json['haptics'] != false,
         earcons: json['earcons'] != false,
         cameraGuidance: json['camera_guidance'] != false,
@@ -51,7 +54,7 @@ class AppPreferences {
         autoPlay: json['auto_play'] == true,
         showMascot: json['show_mascot'] != false,
         showVoiceDock: json['show_voice_dock'] != false,
-        autoCapture: json['auto_capture'] == true,
+        autoCapture: json['auto_capture'] != false,
         readingGuide: json['reading_guide'] == true,
         palette: const [
           'standard',
@@ -78,7 +81,7 @@ class AppPreferences {
         commandSeconds:
             ((json['command_seconds'] as num?)?.toInt() ?? 5).clamp(3, 8),
         playbackSpeed:
-            ((json['playback_speed'] as num?)?.toDouble() ?? 1).clamp(.75, 3),
+            ((json['playback_speed'] as num?)?.toDouble() ?? 1).clamp(.25, 3),
       );
 
   Map<String, dynamic> toJson() => {
@@ -86,6 +89,7 @@ class AppPreferences {
         'bold_text': boldText,
         'reduce_motion': reduceMotion,
         'spoken_hints': spokenHints,
+        'spoken_actions': spokenActions,
         'haptics': haptics,
         'earcons': earcons,
         'camera_guidance': cameraGuidance,

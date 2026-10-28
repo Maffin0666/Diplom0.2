@@ -137,11 +137,15 @@ class LectureRecord {
     this.lastPositionMs = 0,
     int? bookmarkIndex,
     List<String>? bookmarkedChunkIds,
+    List<String>? reviewedChunkIds,
+    this.seriesId = '',
+    this.pageOrder = 0,
   })  : _legacyBookmarkIndex = bookmarkIndex,
-        bookmarkedChunkIds = List<String>.from(bookmarkedChunkIds ?? const []);
+        bookmarkedChunkIds = List<String>.from(bookmarkedChunkIds ?? const []),
+        reviewedChunkIds = List<String>.from(reviewedChunkIds ?? const []);
 
   final String taskId;
-  final String serverBase;
+  String serverBase;
   final String imagePath;
   final DateTime createdAt;
   String status;
@@ -150,6 +154,10 @@ class LectureRecord {
   String customTitle;
   int lastPositionMs;
   final List<String> bookmarkedChunkIds;
+  final List<String> reviewedChunkIds;
+  String seriesId;
+  int pageOrder;
+  String get lectureId => seriesId.isEmpty ? taskId : seriesId;
   int? _legacyBookmarkIndex;
 
   /// IDs survive changed timing and deleted preceding fragments.
@@ -196,7 +204,12 @@ class LectureRecord {
         .map((chunk) => chunk.id)
         .toSet();
     bookmarkedChunkIds.removeWhere((id) => !ids.contains(id));
+    reviewedChunkIds.removeWhere((id) => !ids.contains(id));
   }
+
+  int get remainingReviewCount => (manifest?.chunks ?? const <LectureChunk>[])
+      .where((chunk) => chunk.needsReview && !reviewedChunkIds.contains(chunk.id))
+      .length;
 
   LectureManifest? get manifest =>
       manifestJson == null ? null : LectureManifest.fromJson(manifestJson!);
@@ -223,6 +236,9 @@ class LectureRecord {
         'last_position_ms': lastPositionMs,
         'bookmark_index': bookmarkIndex,
         'bookmark_ids': bookmarkedChunkIds,
+        'reviewed_chunk_ids': reviewedChunkIds,
+        'series_id': seriesId,
+        'page_order': pageOrder,
       };
 
   factory LectureRecord.fromJson(Map<String, dynamic> json) => LectureRecord(
@@ -243,6 +259,11 @@ class LectureRecord {
         bookmarkedChunkIds: (json['bookmark_ids'] as List<dynamic>?)
             ?.whereType<String>()
             .toList(),
+        reviewedChunkIds: (json['reviewed_chunk_ids'] as List<dynamic>?)
+            ?.whereType<String>()
+            .toList(),
+        seriesId: _string(json['series_id']),
+        pageOrder: ((json['page_order'] as num?)?.toInt() ?? 0).clamp(0, 10000),
       );
 }
 

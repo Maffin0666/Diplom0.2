@@ -18,8 +18,23 @@ enum AppCommand {
   firstFragment,
   lastFragment,
   dictate,
+  dictateSpeech,
+  markFormula,
+  markText,
   removeFragment,
   restoreFragment,
+  confirmFragment,
+  nextUncertain,
+  searchLecture,
+  nextPage,
+  previousPage,
+  page,
+  editPage,
+  addPage,
+  exportText,
+  exportAudio,
+  backupLibrary,
+  restoreLibrary,
   edit,
   save,
   bookmark,
@@ -133,6 +148,10 @@ AppVoiceIntent parseAppVoiceCommand(String words) {
       text == 'заверши управление') {
     return const AppVoiceIntent(AppCommand.stopVoice);
   }
+  if (text == 'прочитай справку' || text == 'прочитай раздел' ||
+      text == 'читай раздел') {
+    return const AppVoiceIntent(AppCommand.play);
+  }
   if (text.startsWith('помощь ') || text.startsWith('справка ')) {
     return AppVoiceIntent(AppCommand.helpTopic, section: text);
   }
@@ -155,6 +174,14 @@ AppVoiceIntent parseAppVoiceCommand(String words) {
   if (text == 'проверь связь' || text == 'проверить связь') {
     return const AppVoiceIntent(AppCommand.checkConnection);
   }
+  if (text.contains('копию библиотеки') || text.contains('резервную копию')) {
+    if (text.contains('восстанов') || text.contains('загруз')) {
+      return const AppVoiceIntent(AppCommand.restoreLibrary);
+    }
+    if (text.contains('сохран') || text.contains('созда')) {
+      return const AppVoiceIntent(AppCommand.backupLibrary);
+    }
+  }
   final switchOn = text.startsWith('включи ') ||
       text.startsWith('показывай ') ||
       text.startsWith('включить ');
@@ -170,6 +197,7 @@ AppVoiceIntent parseAppVoiceCommand(String words) {
         'панель микрофона'
       ],
       'spoken_hints': ['голосовые подсказки', 'озвучивание подсказок'],
+      'spoken_actions': ['озвучивание действий', 'подтверждение действий'],
       'haptics': ['вибрацию', 'виброотклик'],
       'earcons': ['звуковые сигналы', 'короткие звуки'],
       'auto_capture': ['автосъемку', 'автоматический снимок'],
@@ -197,19 +225,74 @@ AppVoiceIntent parseAppVoiceCommand(String words) {
       text == 'исправить текст голосом') {
     return const AppVoiceIntent(AppCommand.dictate);
   }
+  if (text == 'надиктуй произношение' ||
+      text == 'исправь произношение' ||
+      text == 'произнести как') {
+    return const AppVoiceIntent(AppCommand.dictateSpeech);
+  }
+  if (text == 'это формула' || text == 'пометь как формулу') {
+    return const AppVoiceIntent(AppCommand.markFormula);
+  }
+  if (text == 'это текст' || text == 'пометь как текст') {
+    return const AppVoiceIntent(AppCommand.markText);
+  }
   if (text == 'удали фрагмент' || text == 'исключи фрагмент') {
     return const AppVoiceIntent(AppCommand.removeFragment);
   }
   if (text == 'верни фрагмент' || text == 'восстанови фрагмент') {
     return const AppVoiceIntent(AppCommand.restoreFragment);
   }
+  if (text == 'фрагмент верен' || text == 'подтверди фрагмент' ||
+      text == 'текст верен') {
+    return const AppVoiceIntent(AppCommand.confirmFragment);
+  }
+  if (text == 'следующий сомнительный' || text == 'следующая ошибка') {
+    return const AppVoiceIntent(AppCommand.nextUncertain);
+  }
+  final search = RegExp(r'^(?:найди|поиск|найти) (.+)$').firstMatch(text);
+  if (search != null) {
+    return AppVoiceIntent(AppCommand.searchLecture,
+        value: search.group(1), utterance: words);
+  }
+  if (text == 'следующая страница' || text == 'перейди на следующую страницу') {
+    return const AppVoiceIntent(AppCommand.nextPage);
+  }
+  if (text == 'предыдущая страница' || text == 'перейди на предыдущую страницу') {
+    return const AppVoiceIntent(AppCommand.previousPage);
+  }
+  if (text.contains('страниц') && number != null &&
+      (text.contains('исправ') || text.contains('редактир'))) {
+    return AppVoiceIntent(AppCommand.editPage, number: number);
+  }
+  if (text.contains('страниц') && number != null) {
+    return AppVoiceIntent(AppCommand.page, number: number);
+  }
+  if (text == 'добавь страницу' || text == 'добавить страницу') {
+    return const AppVoiceIntent(AppCommand.addPage);
+  }
+  if ((text.contains('экспорт') || text.contains('поделись') ||
+          text.contains('отправь')) &&
+      text.contains('аудио')) {
+    return const AppVoiceIntent(AppCommand.exportAudio);
+  }
+  if ((text.contains('экспорт') || text.contains('поделись') ||
+          text.contains('отправь')) &&
+      text.contains('текст')) {
+    return const AppVoiceIntent(AppCommand.exportText);
+  }
   if (text.contains('последн') && text.contains('фрагмент')) {
+    return const AppVoiceIntent(AppCommand.lastFragment);
+  }
+  if (text.contains('последн') && text.contains('шаг')) {
     return const AppVoiceIntent(AppCommand.lastFragment);
   }
   if (text.contains('перв') && text.contains('фрагмент')) {
     return const AppVoiceIntent(AppCommand.firstFragment);
   }
-  if (text.contains('фрагмент') && number != null) {
+  if (text.contains('перв') && text.contains('шаг')) {
+    return const AppVoiceIntent(AppCommand.firstFragment);
+  }
+  if ((text.contains('фрагмент') || text.contains('шаг')) && number != null) {
     return AppVoiceIntent(AppCommand.fragment, number: number);
   }
   if (text.contains('главн') || text == 'домой') {

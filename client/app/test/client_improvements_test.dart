@@ -159,12 +159,13 @@ void main() {
     ));
     expect(find.text('Фрагмент 1 из 1'), findsOneWidget);
     expect(find.text('Проверьте эту строку по фото'), findsOneWidget);
-    expect(
-        await voice
-            .dispatch(const AppVoiceIntent(AppCommand.fragment, number: 99)),
-        isTrue);
+    await expectLater(
+        voice.dispatch(const AppVoiceIntent(AppCommand.fragment, number: 99)),
+        throwsA(isA<VoiceActionFeedback>().having(
+            (error) => error.message, 'сообщение',
+            'Такого фрагмента в лекции нет')));
     await tester.pump();
-    expect(find.text('Такого фрагмента в лекции нет'), findsOneWidget);
+    expect(find.text('Фрагмент 1 из 1'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

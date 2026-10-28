@@ -5,6 +5,8 @@ import 'app_haptics.dart';
 import 'user_error.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
@@ -30,6 +32,8 @@ class VoiceNavigation extends ChangeNotifier with WidgetsBindingObserver {
   final _speech = stt.SpeechToText();
   AudioRecorder? _recorder;
   FlutterTts? _tts;
+  AudioPlayer? _actionPlayer;
+  final Map<String, Future<File?>> _actionDownloads = {};
   final List<_VoiceBinding> _bindings = [];
   AppPreferences preferences = const AppPreferences();
   String server = '';
@@ -68,9 +72,87 @@ class VoiceNavigation extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Short confirmations are cached on the phone. The first use is spoken
+  /// immediately by Android while the server prepares its voice in background.
+  Future<void> preloadAction(String text) async {
+    if (!preferences.spokenActions || server.trim().isEmpty || _disposed) {
+      return;
+    }
+    try {
+      final key = _actionKey(server.trim(), text);
+      final folder = Directory(
+          '${(await getApplicationSupportDirectory()).path}/action_speech');
+      final file = File('${folder.path}/$key.mp3');
+      if (await file.exists()) return;
+      await _actionDownloads
+          .putIfAbsent(key, () => _downloadAction(text, file))
+          .whenComplete(() => _actionDownloads.remove(key));
+    } catch (_) {
+      // Local Android speech remains available when the server is offline.
+    }
+  }
+
+  Future<void> announceAction(String text) async {
+    if (!preferences.spokenActions || listening || busy || _disposed) return;
+    final address = server.trim();
+    if (address.isEmpty) {
+      await announce(text, force: true);
+      return;
+    }
+    try {
+      final key = _actionKey(address, text);
+      final folder = Directory(
+          '${(await getApplicationSupportDirectory()).path}/action_speech');
+      final file = File('${folder.path}/$key.mp3');
+      if (!await file.exists()) {
+        unawaited(preloadAction(text));
+        await announce(text, force: true);
+        return;
+      }
+      _speaking++;
+      _update();
+      try {
+        final player = _actionPlayer ??= AudioPlayer();
+        await player.setAudioSource(
+            AudioSource.file(file.path, tag: MediaItem(id: key, title: text)));
+        await player.play().timeout(const Duration(seconds: 12));
+      } finally {
+        _speaking--;
+        _update();
+      }
+    } catch (_) {
+      await announce(text, force: true);
+    }
+  }
+
+  Future<File?> _downloadAction(String text, File file) async {
+    RecognitionApi? api;
+    try {
+      await file.parent.create(recursive: true);
+      api = RecognitionApi(server);
+      final url = await api.helpSpeech(text);
+      await api.downloadAudio(url.path, file);
+      return file;
+    } catch (_) {
+      // The next action retries; offline use remains immediate through Android.
+      return null;
+    } finally {
+      api?.close();
+    }
+  }
+
+  String _actionKey(String address, String text) {
+    var hash = 0x811c9dc5;
+    for (final code in '$address\n$text'.codeUnits) {
+      hash = ((hash ^ code) * 0x01000193) & 0xffffffff;
+    }
+    return hash.toRadixString(16).padLeft(8, '0');
+  }
+
   Future<void> stopAnnouncement() async {
     try {
       await _tts?.stop();
+      await _actionPlayer?.stop();
     } catch (_) {
       // The speech engine may have already stopped.
     }
@@ -290,15 +372,19 @@ class VoiceNavigation extends ChangeNotifier with WidgetsBindingObserver {
       final handled = await dispatch(intent);
       final wasDictating = _dictationSession;
       _dictationSession =
-          !wasDictating && handled && intent.command == AppCommand.dictate;
+          !wasDictating && handled &&
+              (intent.command == AppCommand.dictate ||
+                  intent.command == AppCommand.dictateSpeech);
       error = '';
       message = handled
           ? wasDictating
               ? intent.command == AppCommand.back
                   ? 'Диктовка отменена.'
-                  : 'Текст фрагмента записан. Скажите «сохранить» для новой озвучки.'
+                  : 'Фраза записана. Скажите «сохранить» для новой озвучки.'
               : intent.command == AppCommand.dictate
                   ? 'Теперь назовите новый текст фрагмента.'
+                  : intent.command == AppCommand.dictateSpeech
+                      ? 'Теперь произнесите нужное произношение формулы или текста.'
                   : 'Выполнено: $words'
           : intent.command == AppCommand.unknown
               ? 'Не знаю команды «$words». Скажите «помощь».'
@@ -306,7 +392,9 @@ class VoiceNavigation extends ChangeNotifier with WidgetsBindingObserver {
       if (_disposed) return;
       busy = false;
       _showFeedback();
-      if ((!handled ||
+      if (!handled) {
+        await announce(message, force: true);
+      } else if (preferences.spokenActions &&
           ![
             AppCommand.play,
             AppCommand.next,
@@ -315,10 +403,11 @@ class VoiceNavigation extends ChangeNotifier with WidgetsBindingObserver {
             AppCommand.firstFragment,
             AppCommand.lastFragment,
             AppCommand.repeatFormula,
+            AppCommand.explainFormula,
             AppCommand.help,
             AppCommand.helpTopic
-          ].contains(intent.command))) {
-        await announce(message);
+          ].contains(intent.command)) {
+        await announce(message, force: true);
       }
       if (_session &&
           (preferences.continuousVoice ||
@@ -353,7 +442,7 @@ class VoiceNavigation extends ChangeNotifier with WidgetsBindingObserver {
     _dictationSession = false;
     error = reason;
     _showFeedback();
-    unawaited(announce(reason));
+    unawaited(announce(reason, force: true));
   }
 
   @override
@@ -371,10 +460,23 @@ class VoiceNavigation extends ChangeNotifier with WidgetsBindingObserver {
     _timer?.cancel();
     _nextTimer?.cancel();
     _feedbackTimer?.cancel();
-    if (_ready) unawaited(_speech.cancel());
-    if (_recorder != null) unawaited(_recorder!.dispose());
-    if (_tts != null) unawaited(_tts!.stop());
+    if (_ready) unawaited(_ignorePlatformFailure(_speech.cancel));
+    if (_recorder != null) {
+      unawaited(_ignorePlatformFailure(_recorder!.dispose));
+    }
+    if (_tts != null) unawaited(_ignorePlatformFailure(_tts!.stop));
+    if (_actionPlayer != null) {
+      unawaited(_ignorePlatformFailure(_actionPlayer!.dispose));
+    }
     super.dispose();
+  }
+
+  Future<void> _ignorePlatformFailure(Future<dynamic> Function() action) async {
+    try {
+      await action();
+    } catch (_) {
+      // The OS can release a speech service before this widget is disposed.
+    }
   }
 }
 
@@ -454,57 +556,120 @@ class _VoicePageState extends State<VoicePage> {
 }
 
 class VoiceDock extends StatelessWidget {
-  const VoiceDock({super.key, required this.voice, required this.onHelp});
+  const VoiceDock(
+      {super.key,
+      required this.voice,
+      required this.onHelp,
+      this.compact = false});
   final VoiceNavigation voice;
   final VoidCallback onHelp;
+  final bool compact;
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
       animation: voice,
       builder: (context, _) {
         final colors = Theme.of(context).colorScheme;
+        if (compact) {
+          final label = voice.busy
+              ? 'Отменить распознавание'
+              : voice.listening
+                  ? voice.usesServer
+                      ? 'Отправить голосовую команду'
+                      : 'Остановить прослушивание'
+                  : 'Сказать Лектории';
+          return Column(mainAxisSize: MainAxisSize.min, children: [
+            if (voice.listening || voice.busy || voice.feedbackVisible)
+              ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 300),
+                  child: voice.error.isNotEmpty
+                      ? ErrorNotice(message: voice.error)
+                      : Semantics(
+                          liveRegion: true,
+                          child: Card(
+                              color: colors.primaryContainer,
+                              child: Padding(
+                                  padding: const EdgeInsets.all(10),
+                                  child: Text(voice.message,
+                                      textAlign: TextAlign.center))))),
+            Material(
+                color: colors.surfaceContainerHigh,
+                elevation: 4,
+                borderRadius: BorderRadius.circular(32),
+                child: Padding(
+                    padding: const EdgeInsets.all(3),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      IconButton.filled(
+                          tooltip: label,
+                          constraints:
+                              const BoxConstraints(minWidth: 64, minHeight: 64),
+                          onPressed: () => unawaited(
+                              voice.busy ? voice.stop() : voice.toggle()),
+                          icon: Icon(voice.listening
+                              ? Icons.stop_circle_outlined
+                              : Icons.mic_rounded)),
+                      IconButton(
+                          tooltip: 'Помощь',
+                          constraints:
+                              const BoxConstraints(minWidth: 64, minHeight: 64),
+                          onPressed: onHelp,
+                          icon: const Icon(Icons.help_outline_rounded)),
+                    ]))),
+          ]);
+        }
+        final landscape = MediaQuery.sizeOf(context).width >
+            MediaQuery.sizeOf(context).height;
         return Material(
             color: colors.surfaceContainerLow,
             child: SafeArea(
                 top: false,
                 child: Stack(clipBehavior: Clip.none, children: [
-                  Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 4),
-                      child: SizedBox(
-                          height: 58,
-                          child: Row(children: [
-                            Expanded(
-                                child: FilledButton.icon(
-                              onPressed: () => unawaited(
-                                  voice.busy ? voice.stop() : voice.toggle()),
-                              icon: voice.busy
-                                  ? const SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2))
-                                  : Icon(voice.listening
-                                      ? Icons.stop_circle_outlined
-                                      : Icons.mic_rounded),
-                              label: Text(
-                                  voice.busy
-                                      ? 'Отменить ввод'
-                                      : voice.listening
-                                          ? 'Завершить команду'
-                                          : 'Сказать Лектории',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  textAlign: TextAlign.center),
-                            )),
-                            const SizedBox(width: 8),
-                            IconButton.outlined(
-                                onPressed: onHelp,
-                                icon: const Icon(Icons.help_outline_rounded),
-                                tooltip: 'Помощь'),
-                          ]))),
+                  Center(
+                      child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 440),
+                          child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 4),
+                              child: SizedBox(
+                                  height: landscape ? 64 : 64,
+                                  child: Row(children: [
+                                    Expanded(
+                                        child: FilledButton.icon(
+                                      onPressed: () => unawaited(voice.busy
+                                          ? voice.stop()
+                                          : voice.toggle()),
+                                      icon: voice.busy
+                                          ? const SizedBox(
+                                              width: 20,
+                                              height: 20,
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2))
+                                          : Icon(voice.listening
+                                              ? Icons.stop_circle_outlined
+                                              : Icons.mic_rounded),
+                                      label: Text(
+                                          voice.busy
+                                              ? 'Отменить распознавание'
+                                              : voice.listening
+                                                  ? voice.usesServer
+                                                      ? 'Отправить команду'
+                                                      : 'Остановить ввод'
+                                                  : 'Сказать Лектории',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          textAlign: TextAlign.center),
+                                    )),
+                                    const SizedBox(width: 8),
+                                    IconButton.outlined(
+                                        onPressed: onHelp,
+                                        icon: const Icon(
+                                            Icons.help_outline_rounded),
+                                        constraints: const BoxConstraints(
+                                            minWidth: 64, minHeight: 64),
+                                        tooltip: 'Помощь'),
+                                  ]))))),
                   if (voice.listening || voice.busy || voice.feedbackVisible)
                     Positioned(
-                        bottom: 68,
+                        bottom: landscape ? 74 : 74,
                         left: 12,
                         right: 12,
                         child: voice.error.isNotEmpty

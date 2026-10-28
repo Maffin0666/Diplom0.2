@@ -6,9 +6,6 @@ class ContentClassifier:
 
     @classmethod
     def is_math_block(cls, text: str, is_merged_candidate: bool = False) -> bool:
-        if is_merged_candidate:
-            return True
-
         if not text or not text.strip():
             return False
 
@@ -23,20 +20,32 @@ class ContentClassifier:
         if len(t) > 20 and mixed >= 2:
             return False
 
-        # Структурные маркеры существеннее числа слов в подписи к формуле.
-        if re.search(r"\\[a-z]+\b", t):
+        # Only known LaTeX commands count; OCR noise often contains a stray \.
+        if re.search(r"\\(?:frac|sqrt|sum|int|lim|alpha|beta|pi)\b", t):
             return True
-        if any(op in t for op in ("=", "≠", "≈", "≤", "≥", "<", ">", "√", "∫", "∑", "∞", "^")):
+        if any(op in t for op in ("√", "∫", "∑", "∞")):
             return True
-        if re.search(r"\b(?:lim|sqrt|sin|cos|tg|ctg|log|ln|int|sum)\b", t):
+        if re.search(r"\b(?:lim|sqrt|sin|cos|tg|ctg|log|ln|int|sum)\b", t) and len(tokens) <= 8:
             return True
         if re.fullmatch(r"\s*f\s*\([^)]*\)\s*", t):
             return True
         if re.fullmatch(r"\s*[a-zху]_?[0-9]\s*", t):
             return True
-        # Один слеш внутри длинной строки OCR часто означает шум, а не дробь.
-        if re.fullmatch(r"\s*[a-zа-яα-ω\d()+*\s-]+\s*/\s*[a-zа-яα-ω\d()+*\s-]+\s*", t):
+        # An isolated slash/caret or comparison sign inside a sentence is more
+        # likely OCR noise than a mathematical expression.
+        words = re.findall(r"[а-яё]{3,}", t)
+        equation = re.search(
+            r"(?<![a-zа-яё])(?:[a-zа-яё]|\d+(?:[.,]\d+)?|f\([^)]{1,20}\))\s*(?:=|≠|≈|≤|≥)",
+            t,
+        )
+        if equation and len(words) <= 4 and (len(t) <= 65 or len(words) <= 2):
             return True
-        if re.fullmatch(r"\s*[a-zа-яα-ω]\s*[-+*×·]\s*[a-zа-яα-ω\d]+\s*", t):
+        if "^" in t and len(words) <= 2 and re.search(r"[a-zа-яё0-9)]\s*\^\s*[-+a-zа-яё0-9({]", t):
+            return True
+        if re.fullmatch(r"\s*[a-zα-ω0-9()]{1,5}\s*/\s*[a-zα-ω0-9()]{1,5}\s*", t):
+            return True
+        if re.fullmatch(r"\s*[a-zхуα-ω]\s*[-+*×·]\s*[a-zхуα-ω\d]{1,5}\s*", t):
+            return True
+        if is_merged_candidate and not words and re.search(r"[=+×÷/∫∑√]", t):
             return True
         return False

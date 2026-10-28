@@ -49,6 +49,24 @@ void main() {
     expect(parseAppVoiceCommand('открой лекцию два').number, 2);
     expect(parseAppVoiceCommand('открой лекцию двадцать один').number, 21);
     expect(parseAppVoiceCommand('Фрагмент 17').command, AppCommand.fragment);
+    expect(parseAppVoiceCommand('страница пять').command, AppCommand.page);
+    expect(parseAppVoiceCommand('страница пять').number, 5);
+    expect(parseAppVoiceCommand('исправь страницу пять').command,
+        AppCommand.editPage);
+    expect(parseAppVoiceCommand('шаг два').command, AppCommand.fragment);
+    expect(parseAppVoiceCommand('шаг два').number, 2);
+    expect(parseAppVoiceCommand('поделись аудио').command,
+        AppCommand.exportAudio);
+    expect(parseAppVoiceCommand('поделись текстом').command,
+        AppCommand.exportText);
+    expect(parseAppVoiceCommand('сохрани копию библиотеки').command,
+        AppCommand.backupLibrary);
+    expect(parseAppVoiceCommand('восстанови копию библиотеки').command,
+        AppCommand.restoreLibrary);
+    expect(parseAppVoiceCommand('это формула').command, AppCommand.markFormula);
+    expect(parseAppVoiceCommand('это текст').command, AppCommand.markText);
+    expect(parseAppVoiceCommand('надиктуй произношение').command,
+        AppCommand.dictateSpeech);
     expect(parseAppVoiceCommand('тёмная тема').command, AppCommand.dark);
     expect(parseAppVoiceCommand('доступность').command, AppCommand.section);
     expect(parseAppVoiceCommand('сделай фото').command, AppCommand.capture);
@@ -200,6 +218,23 @@ void main() {
     expect(find.textContaining('Не знаю такой команды'), findsOneWidget);
   });
 
+  testWidgets('кнопка микрофона сообщает действие и имеет крупную зону',
+      (tester) async {
+    final voice = VoiceNavigation();
+    addTearDown(voice.dispose);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: VoiceDock(voice: voice, onHelp: () {}, compact: true)),
+    ));
+    expect(tester.getSize(find.byTooltip('Сказать Лектории')).width,
+        greaterThanOrEqualTo(64));
+    voice.listening = true;
+    voice.usesServer = true;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: VoiceDock(voice: voice, onHelp: () {}, compact: true)),
+    ));
+    expect(find.byTooltip('Отправить голосовую команду'), findsOneWidget);
+  });
+
   testWidgets('справка разделяет краткое руководство и команды',
       (tester) async {
     await tester.pumpWidget(const MaterialApp(home: HelpPage()));
@@ -265,6 +300,13 @@ void main() {
       }
     }
     expect(assessTextFrame(text, w, h).textLikely, isTrue);
+    final dense = Uint8List.fromList(white);
+    for (var y = 28; y < 210; y++) {
+      for (var x = 24; x < 156; x++) {
+        if ((x + y % 7) % 11 < 4) dense[y * w + x] = 35;
+      }
+    }
+    expect(assessTextFrame(dense, w, h).textLikely, isTrue);
     final chalkboard = Uint8List(w * h)..fillRange(0, w * h, 30);
     for (var row = 45; row < 200; row += 24) {
       for (var y = row; y < row + 5; y++) {

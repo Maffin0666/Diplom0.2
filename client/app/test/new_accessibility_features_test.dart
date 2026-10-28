@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:lecture_reader/app_preferences.dart';
 import 'package:lecture_reader/app_theme.dart';
+import 'package:lecture_reader/capture_review_page.dart';
 import 'package:lecture_reader/formula_breakdown.dart';
 import 'package:lecture_reader/home_page.dart';
 import 'package:lecture_reader/lecture_export.dart';
@@ -58,6 +60,10 @@ void main() {
     expect(prefs.fontMode, 'atkinson');
     expect(prefs.playbackSpeed, 3);
     expect(AppPreferences.fromJson({'playback_speed': 20}).playbackSpeed, 3);
+    expect(AppPreferences.fromJson({'playback_speed': .25}).playbackSpeed, .25);
+    expect(AppPreferences.fromJson({'playback_speed': .5}).playbackSpeed, .5);
+    expect(AppPreferences.fromJson({'spoken_actions': false}).spokenActions,
+        isFalse);
   });
 
   test('разбор дроби и экспорт используют исправленный текст и метки', () {
@@ -147,6 +153,50 @@ void main() {
     expect(find.byTooltip('Воспроизвести'), findsOneWidget);
   });
 
+  testWidgets('плеер в горизонтальном положении оставляет место для текста',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(900, 400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(
+      theme: AppTheme.light(),
+      home: MediaQuery(
+        data: const MediaQueryData(size: Size(900, 400)),
+        child: PreferencesScope(
+          preferences: const AppPreferences(showMascot: false),
+          child: LyricsPlayer(
+            record: _lecture(),
+            position: Duration.zero,
+            playing: false,
+            loading: false,
+            speed: 1,
+            onPlayPause: () {},
+            onSeek: (_) {},
+            onSeekTime: (_) {},
+            onSpeed: (_) {},
+            onBookmark: () {},
+            onEditTranscript: () {},
+            pose: LectoriaPose.idle,
+            message: '',
+            error: '',
+          ),
+        ),
+      ),
+    ));
+    expect(tester.takeException(), isNull);
+    expect(
+        find.byKey(const ValueKey('lyrics_transcript_scroll')), findsOneWidget);
+    expect(
+        tester
+            .getSize(find.byKey(const ValueKey('lyrics_transcript_scroll')))
+            .height,
+        greaterThan(200));
+    expect(find.byTooltip('Воспроизвести'), findsOneWidget);
+    await tester.tap(find.byTooltip('Скорость воспроизведения'));
+    await tester.pumpAndSettle();
+    expect(find.text('0.25×'), findsOneWidget);
+    expect(find.text('0.50×'), findsOneWidget);
+  });
+
   testWidgets('главная и настройки не переполняются при масштабе 300%',
       (tester) async {
     await tester.binding.setSurfaceSize(const Size(360, 720));
@@ -178,5 +228,69 @@ void main() {
     )));
     await tester.pump();
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('главная и настройки доступны в горизонтальном положении',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(900, 400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    Widget page(Widget child) => MaterialApp(
+          theme: AppTheme.light(),
+          home: MediaQuery(
+            data: const MediaQueryData(size: Size(900, 400)),
+            child: PreferencesScope(
+                preferences: const AppPreferences(showMascot: false),
+                child: child),
+          ),
+        );
+    var captures = 0;
+    await tester.pumpWidget(page(HomePage(
+      records: [_lecture()],
+      serverConfigured: true,
+      onOpen: (_) {},
+      onCapture: () => captures++,
+      onSettings: () {},
+      onDelete: (_) async {},
+    )));
+    expect(tester.takeException(), isNull);
+    expect(find.byType(NavigationRail), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.add_circle_outline_rounded));
+    await tester.pump();
+    expect(captures, 1);
+    await tester.pumpWidget(page(SettingsPage(
+      server: '',
+      theme: ThemeMode.light,
+      scale: 1,
+      onSave: (_, __, ___) async {},
+    )));
+    expect(tester.takeException(), isNull);
+    final screen = MediaQuery.sizeOf(tester.element(find.byType(SettingsPage)));
+    expect(screen.height, lessThan(500), reason: '$screen');
+    expect(find.byTooltip('Сохранить настройки'), findsOneWidget);
+    expect(
+        tester.widget<Scaffold>(find.byType(Scaffold).last).bottomNavigationBar,
+        isNull);
+  });
+
+  testWidgets('проверка снимка показывает обе кнопки в горизонтальном режиме',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(900, 400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(
+      home: MediaQuery(
+        data: const MediaQueryData(size: Size(900, 400)),
+        child: CaptureReviewPage(
+          photo: XFile('missing-image.jpg'),
+          retryLabel: 'Переснять',
+        ),
+      ),
+    ));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    final use = find.text('Использовать снимок');
+    final retry = find.text('Переснять');
+    expect(use, findsOneWidget);
+    expect(retry, findsOneWidget);
+    expect(tester.getBottomRight(retry).dy, lessThan(400));
   });
 }

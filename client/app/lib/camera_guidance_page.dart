@@ -25,6 +25,7 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
   int _stableFrames = 0;
   bool _autoTriggered = false;
   Uint8List? _previousGray;
+  DeviceOrientation? _sampleOrientation;
   Future<void>? _initializing;
   Future<void> _disposingCamera = Future<void>.value();
   DateTime _lastFrame = DateTime(2000), _lastFeedback = DateTime(2000);
@@ -108,14 +109,17 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
         await camera.dispose();
         return;
       }
-      await camera.lockCaptureOrientation(DeviceOrientation.portraitUp);
-      if (!mounted || generation != _generation) {
-        await camera.dispose();
-        return;
-      }
       _camera = camera;
       await camera.startImageStream(_frame).timeout(const Duration(seconds: 8));
-      if (mounted && generation == _generation) setState(() => _error = '');
+      if (mounted && generation == _generation) {
+        setState(() => _error = '');
+        final voice = VoiceScope.maybeOf(context);
+        if (voice != null) {
+          unawaited(voice.preloadAction(PreferencesScope.of(context).autoCapture
+              ? 'Снимок сделан автоматически'
+              : 'Снимок сделан'));
+        }
+      }
     } catch (error) {
       if (camera != null) {
         if (identical(camera, _camera)) _camera = null;
@@ -146,9 +150,22 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
     _lastFrame = now;
     final camera = _camera;
     if (camera == null) return;
-    // Capture is locked to portrait. Sensor coordinates are mapped to the same
-    // portrait canvas shown by the preview; stride is honored on all devices.
-    final rotation = camera.description.sensorOrientation % 360;
+    // Match the analysis frame to the orientation used by CameraPreview.
+    // CameraPreview itself rotates with the device when capture is unlocked.
+    final orientation = camera.value.deviceOrientation;
+    if (_sampleOrientation != orientation) {
+      _sampleOrientation = orientation;
+      _previousGray = null;
+      _positiveFrames = _stableFrames = 0;
+    }
+    final deviceDegrees = switch (orientation) {
+      DeviceOrientation.landscapeLeft => 90,
+      DeviceOrientation.portraitDown => 180,
+      DeviceOrientation.landscapeRight => 270,
+      _ => 0,
+    };
+    final rotation =
+        (camera.description.sensorOrientation - deviceDegrees + 360) % 360;
     final swapped = rotation == 90 || rotation == 270;
     final uprightWidth = swapped ? image.height : image.width;
     final uprightHeight = swapped ? image.width : image.height;
@@ -194,10 +211,10 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
     }
     _previousGray = gray;
     _positiveFrames = result.textLikely ? _positiveFrames + 1 : 0;
-    _stableFrames = result.textLikely && result.edgeStrength >= 4 && motion < 7
-        ? _stableFrames + 1
-        : 0;
-    final ready = _positiveFrames >= 3;
+    // Edge strength varies widely between camera sensors and ruled paper.
+    // Stability is based on actual frame-to-frame motion instead.
+    _stableFrames = result.textLikely && motion < 10 ? _stableFrames + 1 : 0;
+    final ready = _positiveFrames >= 2;
     if (_ready != ready || _hint != result.hint) {
       setState(() {
         _ready = ready;
@@ -205,11 +222,11 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
       });
     }
     if (ready &&
-        _stableFrames >= 4 &&
+        _stableFrames >= 3 &&
         PreferencesScope.of(context).autoCapture &&
         !_autoTriggered) {
       _autoTriggered = true;
-      unawaited(_capture());
+      unawaited(_capture(automatic: true));
       return;
     }
     final voice = VoiceScope.maybeOf(context);
@@ -241,7 +258,7 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
     }
   }
 
-  Future<void> _capture() async {
+  Future<void> _capture({bool automatic = false}) async {
     final camera = _camera;
     if (_taking || camera == null || !camera.value.isInitialized) return;
     setState(() => _taking = true);
@@ -251,6 +268,13 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
     try {
       if (camera.value.isStreamingImages) await camera.stopImageStream();
       final photo = await camera.takePicture();
+      if (mounted) {
+        final voice = VoiceScope.maybeOf(context);
+        if (voice != null) {
+          unawaited(voice.announceAction(
+              automatic ? 'Снимок сделан автоматически' : 'Снимок сделан'));
+        }
+      }
       if (mounted) Navigator.of(context).pop(photo);
     } catch (error) {
       _autoTriggered = false;
@@ -261,6 +285,12 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
         unawaited(AppHaptics.tone('error'));
       }
       if (mounted) setState(() => _error = userError(error));
+      if (mounted) {
+        final voice = VoiceScope.maybeOf(context);
+        if (voice != null) {
+          unawaited(voice.announceAction('Не удалось сделать снимок'));
+        }
+      }
       if (mounted && camera.value.isInitialized) {
         await camera.startImageStream(_frame);
       }
@@ -271,10 +301,22 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
 
   Future<bool> _command(AppVoiceIntent intent) async {
     if (intent.command == AppCommand.capture) {
+      if (_camera?.value.isInitialized != true) {
+        throw VoiceActionFeedback(_error.isNotEmpty
+            ? _error
+            : 'Камера ещё открывается. Подождите несколько секунд и повторите команду.');
+      }
       await _capture();
       return true;
     }
     return false;
+  }
+
+  double _previewAspectRatio(CameraValue value) {
+    final landscape =
+        value.deviceOrientation == DeviceOrientation.landscapeLeft ||
+            value.deviceOrientation == DeviceOrientation.landscapeRight;
+    return landscape ? value.aspectRatio : 1 / value.aspectRatio;
   }
 
   @override
@@ -282,12 +324,15 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
     final camera = _camera;
     final colors = Theme.of(context).colorScheme;
     final reduceMotion = PreferencesScope.of(context).reduceMotion;
+    final landscape =
+        MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height;
     return VoicePage(
         onCommand: _command,
         child: Scaffold(
           appBar: AppBar(title: const Text('Съёмка конспекта'), actions: [
             IconButton(
               tooltip: _torch ? 'Выключить фонарь' : 'Включить фонарь',
+              constraints: const BoxConstraints(minWidth: 64, minHeight: 64),
               onPressed: camera == null
                   ? null
                   : () async {
@@ -306,151 +351,165 @@ class _CameraGuidancePageState extends State<CameraGuidancePage>
             )
           ]),
           body: SafeArea(
-              child: Column(children: [
-            Expanded(
-                child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-                    child: LayoutBuilder(builder: (context, constraints) {
-                      return GestureDetector(
-                          onTap: _capture,
-                          behavior: HitTestBehavior.opaque,
-                          child: ClipRRect(
-                              borderRadius: BorderRadius.circular(30),
-                              child: Stack(fit: StackFit.expand, children: [
-                                const ColoredBox(color: Colors.black),
-                                if (camera?.value.isInitialized == true)
-                                  Center(
-                                      child: AspectRatio(
-                                          aspectRatio:
-                                              1 / camera!.value.aspectRatio,
-                                          child: CameraPreview(camera)))
-                                else if (_error.isNotEmpty)
-                                  Center(
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(24),
-                                      child: FilledButton.icon(
-                                        onPressed: () =>
-                                            unawaited(_ensureCamera()),
-                                        icon: const Icon(Icons.refresh_rounded),
-                                        label: const Text(
-                                            'Повторить открытие камеры'),
+              child: Flex(
+                  direction: landscape ? Axis.horizontal : Axis.vertical,
+                  children: [
+                Expanded(
+                    child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+                        child: LayoutBuilder(builder: (context, constraints) {
+                          return Semantics(
+                              button: true,
+                              label: 'Область камеры. Двойное касание делает снимок.',
+                              child: GestureDetector(
+                              onTap: _capture,
+                              behavior: HitTestBehavior.opaque,
+                              child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(30),
+                                  child: Stack(fit: StackFit.expand, children: [
+                                    const ColoredBox(color: Colors.black),
+                                    if (camera?.value.isInitialized == true)
+                                      Center(child: CameraPreview(camera!))
+                                    else if (_error.isNotEmpty)
+                                      Center(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(24),
+                                          child: FilledButton.icon(
+                                            onPressed: () =>
+                                                unawaited(_ensureCamera()),
+                                            icon: const Icon(
+                                                Icons.refresh_rounded),
+                                            label: const Text(
+                                                'Повторить открытие камеры'),
+                                          ),
+                                        ),
+                                      )
+                                    else
+                                      const Center(
+                                          child: CircularProgressIndicator()),
+                                    if (camera?.value.isInitialized == true)
+                                      ValueListenableBuilder<CameraValue>(
+                                          valueListenable: camera!,
+                                          builder: (context, value, _) => Center(
+                                              child: AspectRatio(
+                                                  aspectRatio:
+                                                      _previewAspectRatio(
+                                                          value),
+                                                  child: FractionallySizedBox(
+                                                      widthFactor: .84,
+                                                      heightFactor: .76,
+                                                      child: AnimatedContainer(
+                                                          duration: reduceMotion
+                                                              ? Duration.zero
+                                                              : const Duration(
+                                                                  milliseconds:
+                                                                      250),
+                                                          decoration: BoxDecoration(
+                                                              border: Border.all(
+                                                                  color: _ready
+                                                                      ? const Color(
+                                                                          0xFF8FFFF2)
+                                                                      : Colors.white,
+                                                                  width: _ready ? 4 : 2),
+                                                              borderRadius: BorderRadius.circular(18))))))),
+                                    Positioned(
+                                      top: 18,
+                                      left: 18,
+                                      right: 18,
+                                      child: Row(children: [
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 12, vertical: 9),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xDD111735),
+                                            borderRadius:
+                                                BorderRadius.circular(100),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                  _ready
+                                                      ? Icons
+                                                          .check_circle_rounded
+                                                      : Icons
+                                                          .center_focus_strong_rounded,
+                                                  color: _ready
+                                                      ? const Color(0xFF8FFFF2)
+                                                      : Colors.white,
+                                                  size: 18),
+                                              const SizedBox(width: 7),
+                                              Text(
+                                                  _ready
+                                                      ? 'Текст в рамке'
+                                                      : 'Наведите на страницу',
+                                                  style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontWeight:
+                                                          FontWeight.w700)),
+                                            ],
+                                          ),
+                                        ),
+                                      ]),
+                                    ),
+                                    Positioned(
+                                      left: 18,
+                                      right: 18,
+                                      bottom: 18,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 14, vertical: 11),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xDD111735),
+                                          borderRadius:
+                                              BorderRadius.circular(16),
+                                        ),
+                                        child: Text(
+                                            _ready
+                                                ? 'Строки найдены · держите телефон ровно'
+                                                : 'Уместите текст целиком внутри светлой рамки',
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.w600)),
                                       ),
                                     ),
-                                  )
-                                else
-                                  const Center(
-                                      child: CircularProgressIndicator()),
-                                if (camera?.value.isInitialized == true)
-                                  Center(
-                                      child: AspectRatio(
-                                          aspectRatio:
-                                              1 / camera!.value.aspectRatio,
-                                          child: FractionallySizedBox(
-                                              widthFactor: .84,
-                                              heightFactor: .76,
-                                              child: AnimatedContainer(
-                                                  duration: reduceMotion
-                                                      ? Duration.zero
-                                                      : const Duration(
-                                                          milliseconds: 250),
-                                                  decoration: BoxDecoration(
-                                                      border: Border.all(
-                                                          color: _ready
-                                                              ? const Color(
-                                                                  0xFF8FFFF2)
-                                                              : Colors.white,
-                                                          width:
-                                                              _ready ? 4 : 2),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              18)))))),
-                                Positioned(
-                                  top: 18,
-                                  left: 18,
-                                  right: 18,
-                                  child: Row(children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 12, vertical: 9),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xDD111735),
-                                        borderRadius:
-                                            BorderRadius.circular(100),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                              _ready
-                                                  ? Icons.check_circle_rounded
-                                                  : Icons
-                                                      .center_focus_strong_rounded,
-                                              color: _ready
-                                                  ? const Color(0xFF8FFFF2)
-                                                  : Colors.white,
-                                              size: 18),
-                                          const SizedBox(width: 7),
-                                          Text(
-                                              _ready
-                                                  ? 'Текст в рамке'
-                                                  : 'Наведите на страницу',
-                                              style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontWeight: FontWeight.w700)),
-                                        ],
-                                      ),
-                                    ),
-                                  ]),
-                                ),
-                                Positioned(
-                                  left: 18,
-                                  right: 18,
-                                  bottom: 18,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 14, vertical: 11),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xDD111735),
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                    child: Text(
-                                        _ready
-                                            ? 'Строки найдены · держите телефон ровно'
-                                            : 'Уместите текст целиком внутри светлой рамки',
+                                  ]))));
+                        }))),
+                SizedBox(
+                    width: landscape ? 250 : null,
+                    child: Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 8, 18, 12),
+                        child: Column(
+                            mainAxisAlignment: landscape
+                                ? MainAxisAlignment.end
+                                : MainAxisAlignment.start,
+                            children: [
+                              if (_error.isNotEmpty)
+                                ErrorNotice(message: _error)
+                              else
+                                Semantics(
+                                    liveRegion: true,
+                                    child: Text(_hint,
                                         textAlign: TextAlign.center,
-                                        style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.w600)),
-                                  ),
-                                ),
-                              ])));
-                    }))),
-            Padding(
-                padding: const EdgeInsets.fromLTRB(18, 8, 18, 12),
-                child: Column(children: [
-                  if (_error.isNotEmpty)
-                    ErrorNotice(message: _error)
-                  else
-                    Semantics(
-                        liveRegion: true,
-                        child: Text(_hint,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                                color: colors.onSurface,
-                                fontWeight: FontWeight.w700))),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                          onPressed:
-                              _taking || camera?.value.isInitialized != true
-                                  ? null
-                                  : _capture,
-                          icon: const Icon(Icons.camera_alt),
-                          label:
-                              Text(_taking ? 'Снимаю…' : 'Фотографировать'))),
-                ])),
-          ])),
+                                        style: TextStyle(
+                                            color: colors.onSurface,
+                                            fontWeight: FontWeight.w700))),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                  width: double.infinity,
+                                  child: FilledButton.icon(
+                                      onPressed: _taking ||
+                                              camera?.value.isInitialized !=
+                                                  true
+                                          ? null
+                                          : _capture,
+                                      icon: const Icon(Icons.camera_alt),
+                                      label: Text(_taking
+                                          ? 'Снимаю…'
+                                          : 'Фотографировать'))),
+                            ]))),
+              ])),
         ));
   }
 }

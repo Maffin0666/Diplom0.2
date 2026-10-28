@@ -1,7 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 
+import 'api.dart';
 import 'lektoria_sprite.dart';
 import 'visual_system.dart';
 import 'voice_commands.dart';
@@ -14,12 +17,21 @@ const voiceHelpExamples = <(String, String, String)>[
   ('Навигация', 'открой лекцию один', 'Открыть лекцию по номеру в библиотеке.'),
   ('Навигация', 'настройки', 'Открыть настройки.'),
   ('Навигация', 'назад', 'Вернуться на предыдущий экран.'),
+  ('Навигация', 'прочитай раздел', 'В справке озвучить открытый раздел.'),
+  ('Навигация', 'сохрани копию библиотеки', 'Поделиться резервной копией лекций.'),
+  ('Навигация', 'восстанови копию библиотеки', 'Выбрать резервную копию для восстановления.'),
   ('Лекция', 'воспроизвести', 'Продолжить прослушивание.'),
   ('Лекция', 'пауза', 'Остановить воспроизведение.'),
   ('Лекция', 'следующий фрагмент', 'Перейти к следующей строке.'),
   ('Лекция', 'предыдущий фрагмент', 'Вернуться к предыдущей строке.'),
   ('Лекция', 'фрагмент два', 'Перейти к указанному фрагменту.'),
   ('Лекция', 'последний фрагмент', 'Открыть последний фрагмент сразу.'),
+  ('Лекция', 'найди интеграл', 'Найти фразу в расшифровке и перейти к ней.'),
+  ('Лекция', 'следующая страница', 'Открыть следующую страницу лекции.'),
+  ('Лекция', 'предыдущая страница', 'Открыть предыдущую страницу лекции.'),
+  ('Лекция', 'страница пять', 'Сразу перейти к странице по номеру.'),
+  ('Лекция', 'исправь страницу пять', 'Открыть редактор указанной страницы.'),
+  ('Лекция', 'добавь страницу', 'Снять или выбрать ещё одну страницу.'),
   ('Лекция', 'открой расшифровку', 'Открыть исправление текста.'),
   (
     'Исправление',
@@ -31,13 +43,23 @@ const voiceHelpExamples = <(String, String, String)>[
     'замени текст',
     'Слушать новую фразу для выбранного фрагмента.'
   ),
+  ('Исправление', 'это формула', 'Изменить тип текущего фрагмента на формулу.'),
+  ('Исправление', 'это текст', 'Изменить тип текущего фрагмента на обычный текст.'),
+  ('Исправление', 'надиктуй произношение', 'Задать словами, как озвучить фрагмент.'),
   ('Исправление', 'удали фрагмент', 'Исключить ошибочный фрагмент.'),
   ('Исправление', 'верни фрагмент', 'Вернуть исключённый фрагмент.'),
+  ('Исправление', 'фрагмент верен', 'Отметить текущий фрагмент проверенным.'),
+  ('Исправление', 'следующий сомнительный', 'Перейти к следующему фрагменту с низкой уверенностью.'),
   ('Лекция', 'повтори формулу', 'Повторить ближайшую предыдущую формулу.'),
   ('Лекция', 'разбери формулу', 'Открыть пошаговое чтение формулы.'),
+  ('Лекция', 'следующий шаг', 'В разборе формулы прочитать следующую часть.'),
+  ('Лекция', 'шаг два', 'В разборе формулы прочитать часть по номеру.'),
   ('Лекция', 'быстрее', 'Увеличить скорость на 0,25.'),
   ('Лекция', 'медленнее', 'Уменьшить скорость на 0,25.'),
   ('Лекция', 'покажи закладки', 'Показать закладки лекции.'),
+  ('Лекция', 'закладка два', 'В списке закладок перейти к записи по номеру.'),
+  ('Лекция', 'поделись текстом', 'Отправить расшифровку всей лекции.'),
+  ('Лекция', 'поделись аудио', 'Отправить единый MP3 всех страниц и временные метки.'),
   ('Съёмка', 'камера', 'Открыть камеру.'),
   ('Съёмка', 'сделай фото', 'Снять кадр, когда камера открыта.'),
   ('Съёмка', 'переснять', 'Вернуться к камере с экрана проверки.'),
@@ -85,8 +107,10 @@ class HelpPage extends StatefulWidget {
 }
 
 class _HelpPageState extends State<HelpPage> {
+  final _scroll = ScrollController();
   String? _topic;
   VoiceNavigation? _voice;
+  final AudioPlayer _helpPlayer = AudioPlayer();
   bool _reading = false;
   int _readingEpoch = 0;
 
@@ -126,8 +150,8 @@ class _HelpPageState extends State<HelpPage> {
       if (mounted) {
         unawaited(VoiceScope.maybeOf(context)?.announce(
               _topic == null
-                  ? 'Это справка Лектории. Выберите тему. Для чтения вслух нажмите кнопку звука.'
-                  : 'Раздел ${_topics[_topic]?.$1 ?? 'справки'}. Нажмите кнопку звука для подробностей.',
+                  ? 'Это справка Лектории. Выберите тему. Для чтения вслух скажите «прочитай раздел».'
+                  : 'Раздел ${_topics[_topic]?.$1 ?? 'справки'}. Для подробностей скажите «прочитай раздел».',
             ) ??
             Future<void>.value());
       }
@@ -144,13 +168,17 @@ class _HelpPageState extends State<HelpPage> {
   void dispose() {
     _readingEpoch++;
     if (_reading) unawaited(_voice?.stopAnnouncement() ?? Future<void>.value());
+    unawaited(_helpPlayer.dispose());
+    _scroll.dispose();
     super.dispose();
   }
 
   void _select(String? topic) {
     if (topic != null && !_topics.containsKey(topic)) return;
+    if (_scroll.hasClients) _scroll.jumpTo(0);
     _readingEpoch++;
     if (_reading) unawaited(_voice?.stopAnnouncement() ?? Future<void>.value());
+    unawaited(_helpPlayer.stop());
     setState(() {
       _topic = topic;
       _reading = false;
@@ -161,6 +189,14 @@ class _HelpPageState extends State<HelpPage> {
   }
 
   Future<bool> _command(AppVoiceIntent intent) async {
+    if (intent.command == AppCommand.play && !_reading) {
+      unawaited(_readAloud());
+      return true;
+    }
+    if (intent.command == AppCommand.pause && _reading) {
+      unawaited(_readAloud());
+      return true;
+    }
     if (intent.command == AppCommand.helpTopic) {
       final topic = HelpPage.topicFor(intent.section);
       if (topic == null) return false;
@@ -186,7 +222,7 @@ class _HelpPageState extends State<HelpPage> {
       'capture' =>
         'Съёмка. Нажмите плюс, откройте камеру и поместите текст целиком в рамку. Сделайте снимок кнопкой, касанием экрана или клавишей громкости. Проверьте резкость и края, затем используйте снимок или переснимите.',
       'listening' =>
-        'Прослушивание. Нажмите строку расшифровки или кнопки плеера для перехода. Можно поставить закладку, изменить скорость и продолжить с сохранённого места.',
+        'Прослушивание. Нажмите строку расшифровки или кнопки плеера для перехода. Можно поставить закладку, изменить скорость и продолжить с сохранённого места. В разборе формулы говорите следующий шаг, предыдущий шаг или шаг и его номер.',
       'editing' =>
         'Исправление. В открытой лекции откройте расшифровку. Выберите фрагмент по номеру, поиску или командой последний фрагмент. Сверьте его с выделенной областью фото. Скажите замени текст, затем произнесите исправленную фразу. Скажите сохранить: сервер заново создаст аудио.',
       'connection' =>
@@ -202,6 +238,7 @@ class _HelpPageState extends State<HelpPage> {
     if (_reading) {
       _readingEpoch++;
       await voice.stopAnnouncement();
+      await _helpPlayer.stop();
       if (mounted) setState(() => _reading = false);
       return;
     }
@@ -209,9 +246,9 @@ class _HelpPageState extends State<HelpPage> {
     setState(() => _reading = true);
     try {
       if (_topic == 'commands') {
-        await voice.announce(
+        await _speak(
             'Голосовые команды. Произносите по одной фразе после нажатия микрофона.',
-            force: true);
+            epoch);
         for (final category in [
           'Навигация',
           'Лекция',
@@ -222,12 +259,12 @@ class _HelpPageState extends State<HelpPage> {
           if (!mounted || !_reading || epoch != _readingEpoch) break;
           final examples =
               voiceHelpExamples.where((item) => item.$1 == category);
-          await voice.announce(
+          await _speak(
               '$category. ${examples.map((item) => '${item.$2}: ${item.$3}').join(' ')}',
-              force: true);
+              epoch);
         }
       } else {
-        await voice.announce(_spokenContent(), force: true);
+        await _speak(_spokenContent(), epoch);
       }
     } finally {
       if (mounted && epoch == _readingEpoch) {
@@ -236,9 +273,44 @@ class _HelpPageState extends State<HelpPage> {
     }
   }
 
+  Future<void> _speak(String text, int epoch) async {
+    final address = _voice?.server.trim() ?? '';
+    if (address.isNotEmpty) {
+      final api = RecognitionApi(address);
+      try {
+        final url = await api.helpSpeech(text);
+        if (!mounted || epoch != _readingEpoch) return;
+        await _voice?.stopAnnouncement();
+        await _helpPlayer.setAudioSource(AudioSource.uri(
+          url,
+          tag: MediaItem(
+            id: url.toString(),
+            title: _topic == null ? 'Справка Лектории' : _topics[_topic]!.$1,
+            album: 'Лектория.Ai',
+          ),
+        ));
+        if (!mounted || epoch != _readingEpoch) return;
+        await _helpPlayer.play();
+        return;
+      } catch (_) {
+        // Help must remain readable when the laptop is offline or its server
+        // predates the narration endpoint.
+      } finally {
+        api.close();
+      }
+    }
+    if (mounted && epoch == _readingEpoch) {
+      await _voice?.announce(text, force: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) => VoicePage(
+        scrollController: _scroll,
         onCommand: _command,
+        beforeListen: () async {
+          if (_reading) await _readAloud();
+        },
         child: PopScope(
           canPop: _topic == null,
           onPopInvokedWithResult: (didPop, _) {
@@ -258,6 +330,7 @@ class _HelpPageState extends State<HelpPage> {
                 IconButton(
                   tooltip:
                       _reading ? 'Остановить чтение' : 'Прочитать раздел вслух',
+                  constraints: const BoxConstraints(minWidth: 64, minHeight: 64),
                   onPressed: () => unawaited(_readAloud()),
                   icon: Icon(
                       _reading ? Icons.stop_rounded : Icons.volume_up_rounded),
@@ -270,6 +343,7 @@ class _HelpPageState extends State<HelpPage> {
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 720),
                     child: ListView(
+                      controller: _scroll,
                       padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
                       children: _topic == null
                           ? _overview(context)

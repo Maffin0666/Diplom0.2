@@ -24,6 +24,38 @@ Rect? photoRegionRect(
   );
 }
 
+/// Map a tap on a fitted page to the smallest OCR region under the finger.
+/// A small tolerance makes thin handwritten lines easier to select.
+int? photoChunkAt(Offset point, Size size, Size imageSize,
+    List<LectureChunk> chunks, int originalWidth, int originalHeight) {
+  if (size.isEmpty || imageSize.isEmpty || originalWidth <= 0 || originalHeight <= 0) {
+    return null;
+  }
+  final scale = math.min(size.width / imageSize.width, size.height / imageSize.height);
+  final left = (size.width - imageSize.width * scale) / 2;
+  final top = (size.height - imageSize.height * scale) / 2;
+  final x = (point.dx - left) / (imageSize.width * scale) * originalWidth;
+  final y = (point.dy - top) / (imageSize.height * scale) * originalHeight;
+  if (x < 0 || x > originalWidth || y < 0 || y > originalHeight) return null;
+  int? selected;
+  double? smallestArea;
+  for (var i = 0; i < chunks.length; i++) {
+    final box = chunks[i].bbox;
+    if (box == null) continue;
+    final tolerance = 12 / scale * originalWidth / imageSize.width;
+    if (x < box[0] - tolerance || x > box[2] + tolerance ||
+        y < box[1] - tolerance || y > box[3] + tolerance) {
+      continue;
+    }
+    final area = (box[2] - box[0]) * (box[3] - box[1]).toDouble();
+    if (smallestArea == null || area < smallestArea) {
+      smallestArea = area;
+      selected = i;
+    }
+  }
+  return selected;
+}
+
 /// A page overview makes a cropped OCR line understandable in its context.
 class PhotoRegionOverview extends StatelessWidget {
   const PhotoRegionOverview({
@@ -33,12 +65,16 @@ class PhotoRegionOverview extends StatelessWidget {
     required this.originalWidth,
     required this.originalHeight,
     this.maxHeight = 320,
+    this.chunks = const [],
+    this.onSelect,
   });
 
   final Future<ui.Image?> imageFuture;
   final LectureChunk chunk;
   final int originalWidth, originalHeight;
   final double maxHeight;
+  final List<LectureChunk> chunks;
+  final ValueChanged<int>? onSelect;
 
   @override
   Widget build(BuildContext context) => FutureBuilder<ui.Image?>(
@@ -65,11 +101,21 @@ class PhotoRegionOverview extends StatelessWidget {
                   'Исходный снимок. Выделена область фрагмента ${chunk.index + 1}.',
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(14),
-                child: CustomPaint(
-                  key: ValueKey('photo_region_${chunk.id}'),
-                  size: Size(width, height),
-                  painter: _RegionPainter(
-                      image, region, Theme.of(context).colorScheme.primary),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapUp: onSelect == null ? null : (details) {
+                    final index = photoChunkAt(
+                      details.localPosition, Size(width, height),
+                      Size(image.width.toDouble(), image.height.toDouble()),
+                      chunks, originalWidth, originalHeight);
+                    if (index != null) onSelect!(index);
+                  },
+                  child: CustomPaint(
+                    key: ValueKey('photo_region_${chunk.id}'),
+                    size: Size(width, height),
+                    painter: _RegionPainter(
+                        image, region, Theme.of(context).colorScheme.primary),
+                  ),
                 ),
               ),
             );
